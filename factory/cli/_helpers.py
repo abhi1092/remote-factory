@@ -16,7 +16,7 @@ log = structlog.get_logger()
 _WIZARD_INPUT_PATH = Path("~/.factory/wizard_input.md")
 
 
-CEO_MODES = ["auto", "auto-fresh", "build", "discover", "improve", "meta", "design", "interactive", "research", "review", "qa", "deep-qa", "create", "swebench"]
+CEO_MODES = ["auto", "auto-fresh", "build", "discover", "improve", "meta", "design", "interactive", "research", "review", "qa", "deep-qa", "create", "swebench", "evolve"]
 
 
 RUN_MODES = ["auto", "auto-fresh", "build", "discover", "improve", "meta", "research", "swebench"]

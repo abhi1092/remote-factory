@@ -398,6 +398,14 @@ def cmd_ceo(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
+    if mode == "evolve":
+        if prompt_file:
+            print(
+                "Error: --mode evolve and --prompt are mutually exclusive. "
+                "Evolve mode generates hypotheses from MCP benchmark info.",
+                file=sys.stderr,
+            )
+            return 1
 
     create_description: str | None = None
     design_idea: str | None = None
@@ -583,6 +591,8 @@ def cmd_ceo(args: argparse.Namespace) -> int:
         ceo_mode = "create"
     elif mode == "design":
         ceo_mode = "design"
+    elif mode == "evolve":
+        ceo_mode = "evolve"
     elif interactive:
         ceo_mode = "build"
     else:
@@ -1837,6 +1847,33 @@ def _build_ceo_task(
             "metric, implement the change within mutable_surfaces only (leave fixed_surfaces "
             "untouched), run the research command, compare results against the target, and "
             "make a keep/revert decision. Respect research_constraints and cost_budget. "
+            "The full step-by-step playbook is in your system prompt above."
+        )
+    elif mode == "evolve":
+        task += (
+            "\n\nRun Evolve mode: iterative code evolution via external MCP evaluation. "
+            "The project has an MCP evaluator configured. Follow the Evolve workflow playbook:\n\n"
+            "1. BASELINE: Call get_benchmark_info() to retrieve the initial program. "
+            "Write it to .factory/baseline/initial.py. Call evaluate_solution() on the "
+            "initial program to get the baseline score. Write to .factory/baseline/eval.json "
+            "and .factory/evolve/current_score.json. Copy the program to "
+            ".factory/evolve/current_best.py.\n\n"
+            "2. RESEARCH: Spawn Researcher to analyze the code structure and search for "
+            "optimization techniques relevant to the problem domain.\n\n"
+            "3. EVOLUTION LOOP: Repeat until convergence:\n"
+            "   a. Strategist proposes ONE code hypothesis (within EVOLVE-BLOCK boundaries)\n"
+            "   b. CEO reviews and approves hypothesis\n"
+            "   c. Builder applies the modification to produce candidate.py\n"
+            "   d. CEO verifies EVOLVE-BLOCK constraints respected\n"
+            "   e. Health Checker calls evaluate_solution() via MCP and compares scores\n"
+            "   f. CEO reviews: KEEP if score improved + valid, REVERT otherwise\n"
+            "   g. Update current_best.py if KEEP, finalize experiment\n"
+            "   h. Archivist records results\n"
+            "   i. Check convergence: target score reached, max cycles, or diminishing returns\n\n"
+            "4. STUCK DETECTION: If 3 consecutive experiments are reverted, re-trigger "
+            "Researcher for fresh optimization perspective before next Strategist cycle.\n\n"
+            "5. CONVERGENCE: When target score is reached or max cycles exhausted, "
+            "run final Archivist to summarize the evolution run.\n\n"
             "The full step-by-step playbook is in your system prompt above."
         )
     elif mode == "create":
