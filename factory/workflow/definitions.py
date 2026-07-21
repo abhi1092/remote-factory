@@ -61,6 +61,7 @@ __all__ = [
     "founder_workflow",
     "frontend_design_workflow",
     "frontend_design_scan_workflow",
+    "evolve_workflow",
     "register_all",
 ]
 
@@ -3277,6 +3278,370 @@ def frontend_design_discover_workflow() -> Workflow:
     )
 
 
+
+# ── W₁₅: Evolve Mode ──────────────────────────────────────────────
+
+
+def evolve_workflow() -> Workflow:
+    """W₁₅: Evolve Mode — iterative code evolution via external MCP evaluation.
+
+    Baseline(FnNode) → Researcher → CEO gate →
+    loop: Strategist → CEO gate → begin → Builder → CEO gate(build) →
+    Health Checker(MCP eval + score comparison) → CEO gate(eval) →
+    finalize → Archivist(async) → CEO gate(convergence, RELOOP→strategist)
+    """
+    nodes: dict[str, Any] = {}
+    edges: list[Edge] = []
+
+    # ── Phase 0: Baseline ──────────────────────────────────────
+    nodes["baseline"] = FnNode(
+        id="baseline",
+        command=(
+            'python3 -c "'
+            "import json; from pathlib import Path; "
+            "p = Path('{project_path}/.factory/baseline'); "
+            "p.mkdir(parents=True, exist_ok=True); "
+            "Path('{project_path}/.factory/evolve').mkdir(parents=True, exist_ok=True); "
+            "print('Baseline directory ready. "
+            "CEO must call get_benchmark_info() and evaluate_solution() via MCP, "
+            "then write initial.py and eval.json to .factory/baseline/.')"
+            '"'
+        ),
+        notes=(
+            "Initialize the baseline directory. The CEO must then:\n"
+            "1. Call get_benchmark_info() via MCP to retrieve the initial program\n"
+            "2. Write the initial program to .factory/baseline/initial.py\n"
+            "3. Call evaluate_solution(initial_program) via MCP to get baseline score\n"
+            "4. Write the eval result to .factory/baseline/eval.json\n"
+            "5. Write the current best code to .factory/evolve/current_best.py\n"
+            "6. Write the current score to .factory/evolve/current_score.json"
+        ),
+        writes={
+            ".factory/baseline/initial.py",
+            ".factory/baseline/eval.json",
+            ".factory/evolve/current_best.py",
+            ".factory/evolve/current_score.json",
+        },
+    )
+
+    # ── Phase 1: Research ──────────────────────────────────────
+    nodes["researcher"] = AgentNode(
+        id="researcher",
+        role=AgentRole.RESEARCHER,
+        prompt_template=(
+            "Optimization technique research for code evolution. "
+            "Read the initial program at .factory/baseline/initial.py. "
+            "Identify EVOLVE-BLOCK-START/END markers to understand mutable regions. "
+            "Analyze the algorithm structure, data representations, and constants. "
+            "Search the web for optimization techniques relevant to the problem domain "
+            "(extract domain from the benchmark name in .factory/baseline/eval.json). "
+            "For circle packing: search for gradient descent, simulated annealing, "
+            "constraint satisfaction, and constructive packing strategies. "
+            "Read .factory/archive/ for prior knowledge on similar optimization problems. "
+            "Write findings to .factory/strategy/research.md covering: "
+            "code structure analysis (mutable vs fixed regions), "
+            "candidate optimization techniques ordered by expected impact, "
+            "parameter tuning opportunities, algorithmic alternatives."
+        ),
+        reads={
+            ".factory/baseline/initial.py",
+            ".factory/baseline/eval.json",
+        },
+        writes={".factory/strategy/research.md"},
+    )
+
+    # CEO gate on research quality
+    nodes["gate_research"] = GateNode(
+        id="gate_research",
+        evaluator_type="agent",
+        evaluator_role=AgentRole.CEO,
+        gate_prompt=(
+            "Is the optimization research relevant to the problem domain? "
+            "Does it identify the EVOLVE-BLOCK boundaries correctly? "
+            "Are the proposed techniques ordered by expected impact? "
+            "Are there at least 3 distinct approaches to try?"
+        ),
+        reads={".factory/strategy/research.md"},
+    )
+
+    # ── Phase 2: Evolution Loop ────────────────────────────────
+
+    # Strategist: propose ONE code hypothesis
+    nodes["strategist"] = AgentNode(
+        id="strategist",
+        role=AgentRole.STRATEGIST,
+        prompt_template=(
+            "Generate ONE code modification hypothesis for the evolve loop. "
+            "Read research at .factory/strategy/research.md. "
+            "Read the current best code at .factory/evolve/current_best.py. "
+            "Read experiment history at .factory/results.tsv and .factory/experiments/. "
+            "Read the current score from .factory/evolve/current_score.json. "
+            "The hypothesis MUST be a specific code change within EVOLVE-BLOCK boundaries. "
+            "Follow FEEC priority: Fix (bugs) > Exploit (tune parameters of proven approach) "
+            "> Explore (new algorithm) > Combine (hybrid strategies). "
+            "If the last 3 experiments were all reverted, note this — the CEO will "
+            "trigger fresh research. "
+            "Write a single hypothesis to .factory/strategy/current.md with: "
+            "Category (algorithm-change|parameter-tuning|data-structure|initialization), "
+            "Rationale, Modification (specific code), Expected Impact, Risk."
+        ),
+        reads={
+            ".factory/strategy/research.md",
+            ".factory/evolve/current_best.py",
+            ".factory/evolve/current_score.json",
+        },
+        writes={".factory/strategy/current.md"},
+    )
+
+    # CEO gate: approve hypothesis before Builder starts
+    nodes["gate_strategy"] = GateNode(
+        id="gate_strategy",
+        evaluator_type="agent",
+        evaluator_role=AgentRole.CEO,
+        gate_prompt=(
+            "Review the code modification hypothesis. Check:\n"
+            "1) Is it a specific code change, not vague prose?\n"
+            "2) Does it target only EVOLVE-BLOCK regions?\n"
+            "3) Is the FEEC category correct?\n"
+            "4) Is the expected impact plausible?\n"
+            "5) Check stuck detection: if the last 3 experiments in .factory/results.tsv "
+            "were all REVERT, trigger RELOOP to researcher for fresh perspective "
+            "instead of proceeding to builder.\n"
+            "PROCEED if hypothesis is sound and not stuck. "
+            "RELOOP to strategist if hypothesis is vague or wrong category. "
+            "RELOOP to researcher if stuck (3 consecutive reverts)."
+        ),
+        reads={".factory/strategy/current.md"},
+    )
+
+    # Begin experiment
+    nodes["begin"] = FnNode(
+        id="begin",
+        command='factory begin {project_path} --hypothesis "$HYPOTHESIS"',
+        notes=(
+            "Open a new experiment for the current hypothesis. "
+            "The CEO must substitute $HYPOTHESIS with the hypothesis text."
+        ),
+        writes={".factory/experiments/current_id"},
+    )
+
+    # Builder: apply the hypothesis to produce a candidate
+    nodes["builder"] = AgentNode(
+        id="builder",
+        role=AgentRole.BUILDER,
+        timeout=1200,
+        prompt_template=(
+            "Apply the code modification hypothesis to produce a candidate program. "
+            "Read the hypothesis at .factory/strategy/current.md. "
+            "Read the current best code at .factory/evolve/current_best.py. "
+            "CRITICAL CONSTRAINTS:\n"
+            "- ONLY modify code between EVOLVE-BLOCK-START and EVOLVE-BLOCK-END markers\n"
+            "- Preserve ALL code outside evolution markers (imports, helpers, return format)\n"
+            "- Maintain function signatures and return types expected by the evaluator\n"
+            "- No external dependencies beyond what\'s in the initial program\n"
+            "- Validate Python syntax (AST parse check)\n"
+            "Write the complete modified program to .factory/experiments/$EXP_ID/candidate.py. "
+            "Also copy it to .factory/evolve/candidate.py for the evaluator."
+        ),
+        reads={
+            ".factory/strategy/current.md",
+            ".factory/evolve/current_best.py",
+        },
+        writes={
+            ".factory/reviews/builder-latest.md",
+            ".factory/evolve/candidate.py",
+        },
+    )
+
+    # CEO gate on build quality
+    nodes["gate_build"] = GateNode(
+        id="gate_build",
+        evaluator_type="agent",
+        evaluator_role=AgentRole.CEO,
+        gate_prompt=(
+            "Review builder output. Check:\n"
+            "1) candidate.py exists at .factory/evolve/candidate.py\n"
+            "2) Only EVOLVE-BLOCK regions were modified (diff the candidate against current_best.py)\n"
+            "3) Python syntax is valid\n"
+            "4) No external dependencies were added\n"
+            "REDIRECT to builder if constraints violated."
+        ),
+        reads={".factory/reviews/builder-latest.md"},
+    )
+
+    # Health Checker: evaluate via MCP + score comparison
+    nodes["health_checker"] = AgentNode(
+        id="health_checker",
+        role=AgentRole.HEALTH_CHECKER,
+        timeout=600,
+        prompt_template=(
+            "Evaluate the candidate program via MCP and compare scores. "
+            "1. Read the candidate code from .factory/evolve/candidate.py\n"
+            "2. Call evaluate_solution(candidate_code) via MCP tool\n"
+            "3. Parse the response: combined_score, validity, eval_time, sum_radii\n"
+            "4. Read current best score from .factory/evolve/current_score.json\n"
+            "5. Read baseline eval_time from .factory/baseline/eval.json\n"
+            "6. Apply verdict logic:\n"
+            "   - If validity == false: REVERT ('Invalid solution')\n"
+            "   - If combined_score <= current_score: REVERT ('Score degraded or unchanged')\n"
+            "   - If eval_time > 10 * baseline_eval_time: REVERT ('Unacceptable slowdown')\n"
+            "   - Otherwise: KEEP ('Score improved')\n"
+            "7. Write eval results to .factory/experiments/$EXP_ID/eval_after.json\n"
+            "8. Write verdict with KEEP/REVERT and rationale to "
+            ".factory/reviews/health-check.md\n"
+            "Include in the verdict: score_before, score_after, delta, validity, eval_time."
+        ),
+        reads={
+            ".factory/evolve/candidate.py",
+            ".factory/evolve/current_score.json",
+            ".factory/baseline/eval.json",
+        },
+        writes={
+            ".factory/reviews/health-check.md",
+        },
+    )
+
+    # CEO gate on eval results — applies keep/revert
+    nodes["gate_eval"] = GateNode(
+        id="gate_eval",
+        evaluator_type="agent",
+        evaluator_role=AgentRole.CEO,
+        gate_prompt=(
+            "Review the evaluation verdict at .factory/reviews/health-check.md.\n"
+            "Read the Health Checker\'s KEEP/REVERT recommendation and rationale.\n"
+            "If KEEP:\n"
+            "  - Update .factory/evolve/current_best.py with the candidate code\n"
+            "  - Update .factory/evolve/current_score.json with the new score\n"
+            "  - Set $VERDICT=keep for finalize\n"
+            "If REVERT:\n"
+            "  - Keep current_best.py unchanged\n"
+            "  - Set $VERDICT=revert for finalize\n"
+            "Then PROCEED to finalize and archival."
+        ),
+        reads={".factory/reviews/health-check.md"},
+    )
+
+    # Finalize experiment
+    nodes["finalize"] = FnNode(
+        id="finalize",
+        command=(
+            "factory finalize {project_path}"
+            " --id $EXP_ID"
+            " --verdict $VERDICT"
+            ' --hypothesis "$HYPOTHESIS"'
+        ),
+        notes=(
+            "Close the experiment with a keep/revert verdict. "
+            "The CEO must substitute $EXP_ID, $VERDICT (keep/revert/error), and $HYPOTHESIS."
+        ),
+        reads={".factory/reviews/health-check.md"},
+        writes={".factory/experiments/verdict.json"},
+    )
+
+    # Archivist: record results (async, non-blocking)
+    nodes["archivist"] = AgentNode(
+        id="archivist",
+        role=AgentRole.ARCHIVIST,
+        prompt_template=(
+            "Archive evolve experiment results and learnings. "
+            "Read the experiment verdict at .factory/experiments/verdict.json. "
+            "Read the hypothesis at .factory/strategy/current.md. "
+            "Read the eval results at .factory/reviews/health-check.md. "
+            "If KEEP: document what worked (algorithm insight, parameter sweet spot). "
+            "If REVERT: document why it failed (validity issue, wrong assumption, local optimum). "
+            "Write learnings to .factory/archive/experiments/$EXP_ID.md."
+        ),
+        reads={".factory/experiments/verdict.json", ".factory/reviews/health-check.md"},
+        writes={".factory/archive/experiment.md"},
+        blocking=False,
+    )
+
+    # Convergence gate: CEO checks if target reached or max iterations
+    nodes["gate_convergence"] = GateNode(
+        id="gate_convergence",
+        evaluator_type="agent",
+        evaluator_role=AgentRole.CEO,
+        gate_prompt=(
+            "Check convergence criteria. Read .factory/evolve/current_score.json "
+            "and .factory/results.tsv.\n"
+            "Exit (PROCEED) if ANY of:\n"
+            "  1. Target score reached (check factory.md convergence.target_score)\n"
+            "  2. Max cycles reached (check factory.md convergence.max_cycles, default 50)\n"
+            "  3. Diminishing returns: 5 consecutive cycles with improvement < 0.001\n"
+            "Continue (RELOOP to strategist) otherwise.\n"
+            "Log the convergence status: current_score, target, cycles_completed, "
+            "recent_improvement_deltas."
+        ),
+        reads={
+            ".factory/evolve/current_score.json",
+        },
+    )
+
+    # Final archivist: blocking summary when converged
+    nodes["archivist_final"] = AgentNode(
+        id="archivist_final",
+        role=AgentRole.ARCHIVIST,
+        prompt_template=(
+            "Final evolution summary. Write a comprehensive summary of the evolution run: "
+            "total experiments, keep/revert counts, score trajectory (baseline to final), "
+            "best-performing hypothesis categories, key learnings. "
+            "Read .factory/results.tsv for full history. "
+            "Write to .factory/archive/evolve-summary.md."
+        ),
+        reads={".factory/evolve/current_score.json"},
+        writes={".factory/archive/evolve-summary.md"},
+        blocking=True,
+    )
+
+    # ── Edges ──────────────────────────────────────────────────
+
+    edges = [
+        # Baseline → researcher
+        Edge(source="baseline", target="researcher"),
+        # Researcher → research gate
+        Edge(source="researcher", target="gate_research"),
+        Edge(source="gate_research", target="strategist", condition=VerdictType.PROCEED),
+        Edge(source="gate_research", target="researcher", condition=VerdictType.RELOOP),
+
+        # Strategist → strategy gate
+        Edge(source="strategist", target="gate_strategy"),
+        Edge(source="gate_strategy", target="begin", condition=VerdictType.PROCEED),
+        Edge(source="gate_strategy", target="strategist", condition=VerdictType.RELOOP),
+
+        # Begin → builder
+        Edge(source="begin", target="builder"),
+        # Builder → build gate
+        Edge(source="builder", target="gate_build"),
+        Edge(source="gate_build", target="health_checker", condition=VerdictType.PROCEED),
+        Edge(source="gate_build", target="builder", condition=VerdictType.RELOOP),
+
+        # Health checker → eval gate
+        Edge(source="health_checker", target="gate_eval"),
+        Edge(source="gate_eval", target="finalize", condition=VerdictType.PROCEED),
+
+        # Finalize → archivist (async)
+        Edge(source="finalize", target="archivist"),
+
+        # Archivist → convergence gate
+        Edge(source="archivist", target="gate_convergence"),
+
+        # Convergence: RELOOP to strategist for next cycle, PROCEED to final archivist
+        Edge(source="gate_convergence", target="strategist", condition=VerdictType.RELOOP),
+        Edge(source="gate_convergence", target="archivist_final", condition=VerdictType.PROCEED),
+    ]
+
+    def trigger(state: ProjectState, ctx: dict[str, Any]) -> bool:
+        return ctx.get("mode") == "evolve"
+
+    return Workflow(
+        name="evolve",
+        nodes=nodes,
+        edges=edges,
+        start_node="baseline",
+        trigger=trigger,
+    )
+
+
 # ── Registry ─────────────────────────────────────────────────────
 
 
@@ -3683,4 +4048,5 @@ def register_all() -> dict[str, Workflow]:
         "frontend-design": frontend_design_workflow(),
         "frontend-design-discover": frontend_design_discover_workflow(),
         "frontend-design-scan": frontend_design_scan_workflow(),
+        "evolve": evolve_workflow(),
     }
