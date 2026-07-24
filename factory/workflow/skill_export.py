@@ -133,13 +133,27 @@ WORKFLOW_META: dict[str, dict[str, str | list[str]]] = {
     },
     "create": {
         "description": (
-            "Create mode — meta-mode for creating new factory modes from user descriptions. "
-            "Takes a description (text, spec file, or flow) and produces a fully working "
-            "workflow definition, SKILL.md, CLI wiring, and tests. Use when the user says "
-            "'create a mode for X', 'add a new workflow', or wants to extend the factory "
-            "with a custom pipeline."
+            "Create mode — meta-mode for creating new factory modes or updating existing ones. "
+            "For new modes: takes a description and produces a fully working workflow definition, "
+            "SKILL.md, CLI wiring, and tests. For updates: use --focus \"mode_name: change description\" "
+            "to modify an existing registered mode (e.g. --focus \"improve: add plateau detection\"). "
+            "Use when the user says 'create a mode for X', 'update the improve mode', "
+            "'add a new workflow', or wants to extend/modify factory pipelines."
         ),
-        "argument_hint": '"mode description" or /path/to/spec.md',
+        "argument_hint": '"mode description" or "existing_mode: change description"',
+    },
+    "optimize": {
+        "description": (
+            "Optimize an existing factory mode by analyzing its performance across "
+            "recent cycles, identifying weaknesses (high redirect rates, agent timeouts, "
+            "low keep rates), and generating targeted workflow changes. Delegates "
+            "implementation to create mode (update-existing-mode path) which runs "
+            "its own full QA pipeline. "
+            "Use when the user says 'optimize the improve mode', 'tune the build workflow', "
+            "or wants to improve factory mode effectiveness based on historical data. "
+            "Requires --focus <target_mode_name>."
+        ),
+        "argument_hint": '"<project_path> --focus <target_mode>"',
     },
     "swebench": {
         "description": (

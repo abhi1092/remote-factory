@@ -11,6 +11,7 @@ W₈: Refine Mode
 W₉: Create Mode (meta-mode for creating new factory modes)
 W₁₀: Spec Generate Mode
 W₁₁: Spec Update Mode
+W₁₂: Optimize Mode (meta-mode: analyze mode performance → change spec → delegate to create)
 
 All 5 core workflows (build, improve, research, refine, create) use the deep-QA
 verification pipeline: 3 specialist agents (health_checker, code_reviewer,
@@ -51,6 +52,7 @@ __all__ = [
     "review_workflow",
     "refine_workflow",
     "create_workflow",
+    "optimize_workflow",
     "skill_refine_workflow",
     "doc_generate_workflow",
     "doc_update_workflow",
@@ -1479,7 +1481,12 @@ def create_workflow() -> Workflow:
         role=AgentRole.RESEARCHER,
         prompt_template=(
             "Existing workflow analysis. "
-            "Read factory/workflow/definitions.py and analyze all existing workflow "
+            "If the CEO task includes '## Create Mode (Update Existing Mode)', read the "
+            "**Target mode:** field and focus your analysis on that specific mode's workflow "
+            "definition via `factory workflow show <target_mode>`. Document its current node "
+            "sequences, gate logic, edge wiring, trigger function, and reads/writes. Also read "
+            "its SKILL.md at skills/workflow-<target_mode>/SKILL.md for the generated playbook. "
+            "Otherwise, read factory/workflow/definitions.py and analyze all existing workflow "
             "definitions (build, design, improve, research, meta, discover, review, refine). "
             "Document common patterns: node sequences, gate conventions, fork/join patterns, "
             "archivist placement, edge wiring, trigger functions, reads/writes declarations. "
@@ -1498,7 +1505,11 @@ def create_workflow() -> Workflow:
         prompt_template=(
             "Mode description analysis. "
             "Read the user's mode description from the CEO task. "
-            "Parse and structure it into a workflow specification: "
+            "If the CEO task includes '## Create Mode (Update Existing Mode)', parse the "
+            "**Requested changes:** field and structure the requested modifications against "
+            "the existing mode's current behavior. Identify which nodes, edges, prompts, or "
+            "gates need to change and which must remain untouched. "
+            "Otherwise, parse and structure the description into a new workflow specification: "
             "- Purpose and trigger conditions "
             "- Agent roles needed (which specialists) "
             "- Gate logic (user vs agent vs fn evaluators) "
@@ -1556,9 +1567,14 @@ def create_workflow() -> Workflow:
         id="strategist",
         role=AgentRole.STRATEGIST,
         prompt_template=(
-            "Synthesize a complete workflow specification for a new factory mode. "
+            "Synthesize a workflow specification. "
             "Read ALL tagged research files at .factory/strategy/research-*.md. "
-            "Produce a complete specification including: "
+            "If the CEO task includes '## Create Mode (Update Existing Mode)', produce a "
+            "change spec describing modifications to the existing workflow: which nodes/edges/"
+            "prompts/gates to modify, what to add or remove, and a diff-oriented implementation "
+            "plan. Include the 20-point verification checklist from the CEO task. Do NOT produce "
+            "a complete new workflow definition — describe changes to the existing one. "
+            "Otherwise, produce a complete specification for a new factory mode including: "
             "1) Python code for the workflow function (nodes dict, edges list, trigger) "
             "2) WORKFLOW_META entry (description, argument_hint) "
             "3) CLI wiring changes (build_parser mode choices, cmd_ceo routing, _build_ceo_task section) "
@@ -1597,10 +1613,16 @@ def create_workflow() -> Workflow:
         role=AgentRole.BUILDER,
         timeout=1800,
         prompt_template=(
-            "Implement the new factory mode from the approved workflow specification. "
+            "Implement the workflow changes from the approved specification. "
             "Read the approved spec at .factory/strategy/current.md. "
             "Read CLAUDE.md for project conventions. "
-            "Implementation checklist: "
+            "If the CEO task includes '## Create Mode (Update Existing Mode)', follow the "
+            "update checklist: modify the existing workflow function in definitions.py, verify "
+            "the register_all() entry still resolves, update WORKFLOW_META if needed, verify all "
+            "20 registration points from the CEO task, run factory workflow validate <name>, "
+            "regenerate SKILL.md via factory workflow export-skills, update tests, run pytest "
+            "and ruff check. "
+            "Otherwise, follow the new-mode checklist: "
             "1) Add the workflow function to factory/workflow/definitions.py "
             "2) Register it in register_all() "
             "3) Add WORKFLOW_META entry in factory/workflow/skill_export.py "
@@ -1733,6 +1755,203 @@ def create_workflow() -> Workflow:
         nodes=nodes,
         edges=edges,
         start_node="fork_research",
+        trigger=trigger,
+    )
+
+
+# ── W₁₂: Optimize Mode ────────────────────────────────────────────
+
+
+def optimize_workflow() -> Workflow:
+    """W₁₂: Optimize Mode — analyze mode performance → change spec → delegate to create mode.
+
+    Study → Researcher(mode analysis) → CEO gate → Strategist(change spec) →
+    User approval gate → Archivist(async) → FnNode(delegate to create mode) →
+    Archivist(async)
+    """
+    nodes: dict[str, Any] = {}
+    edges: list[Edge] = []
+
+    # ── Phase 1: Study ────────────────────────────────────────────
+    nodes["study"] = Study(
+        id="study",
+        command="factory study {project_path}",
+        writes={".factory/strategy/observations.md"},
+    )
+
+    # ── Phase 2: Researcher — analyze target mode performance ─────
+    nodes["researcher"] = AgentNode(
+        id="researcher",
+        role=AgentRole.RESEARCHER,
+        prompt_template=(
+            "Mode performance analysis. "
+            "Read the target mode name from the CEO task (--focus argument). "
+            "Analyze the target mode's effectiveness by reading:\n"
+            "1. Workflow definition: run `factory workflow show <target_mode>`\n"
+            "2. SKILL.md: read `skills/workflow-<target_mode>/SKILL.md`\n"
+            "3. Experiment history: read `.factory/results.tsv` — compute keep rate, "
+            "avg score delta per keep, revert rate, error rate for experiments "
+            "that ran under this mode\n"
+            "4. CEO verdicts: read `.factory/reviews/ceo-verdict-*.md` — count "
+            "REDIRECT and ABORT frequencies per agent role\n"
+            "5. Events: read `.factory/events.jsonl` — identify agent timeouts, "
+            "failures, and avg invocations per cycle\n"
+            "6. Archive: read `.factory/archive/` — extract qualitative patterns, "
+            "recurring failures, anti-patterns\n\n"
+            "Produce a structured performance report:\n"
+            "- Mode effectiveness metrics (keep rate, avg delta, cycle count)\n"
+            "- Agent-level metrics (redirect rate, timeout rate per role)\n"
+            "- Bottleneck identification (which nodes/gates cause most failures)\n"
+            "- Weakness classification (prompt quality, gate criteria, node ordering, "
+            "missing steps, timeout values)\n"
+            "- Specific recommendations with evidence\n\n"
+            "Write findings to .factory/strategy/research-mode-analysis.md."
+        ),
+        reads={".factory/strategy/observations.md"},
+        writes={".factory/strategy/research-mode-analysis.md"},
+        timeout=600,
+    )
+
+    # ── Phase 2b: CEO gate on research ────────────────────────────
+    nodes["gate_research"] = GateNode(
+        id="gate_research",
+        evaluator_type="agent",
+        evaluator_role=AgentRole.CEO,
+        gate_prompt=(
+            "Review the mode performance analysis. "
+            "Is the analysis grounded in actual data (metrics, counts, evidence)? "
+            "Are the identified weaknesses specific and actionable? "
+            "Does the analysis cover all relevant data sources "
+            "(results.tsv, events.jsonl, CEO verdicts, archive)? "
+            "REDIRECT if the analysis is vague or missing key data sources."
+        ),
+        reads={".factory/strategy/research-mode-analysis.md"},
+    )
+
+    # ── Phase 3: Strategist — generate change specification ───────
+    nodes["strategist"] = AgentNode(
+        id="strategist",
+        role=AgentRole.STRATEGIST,
+        prompt_template=(
+            "Generate a workflow change specification for the target mode. "
+            "Read the mode performance analysis at "
+            ".factory/strategy/research-mode-analysis.md. "
+            "Read the CEO research review at "
+            ".factory/reviews/ceo-verdict-researcher.md.\n\n"
+            "Produce a change specification that includes:\n"
+            "1. Target mode name and current workflow summary\n"
+            "2. Identified weaknesses (with metrics from the analysis)\n"
+            "3. Proposed changes — for each change:\n"
+            "   - Which node/edge/gate/prompt to modify, add, or remove\n"
+            "   - What the current behavior is\n"
+            "   - What the new behavior should be\n"
+            "   - Expected impact on the identified weakness\n"
+            "4. Changes NOT proposed (and why — risk assessment)\n"
+            "5. A one-line summary suitable for --focus argument to create mode\n\n"
+            "Scope: The change spec must be implementable in a single PR. "
+            "Prefer targeted prompt/gate/timeout changes over structural graph rewiring. "
+            "Do NOT propose removing safety gates or QA steps.\n\n"
+            "Write the specification to .factory/strategy/current.md."
+        ),
+        reads={".factory/strategy/research-mode-analysis.md"},
+        writes={".factory/strategy/current.md"},
+        timeout=600,
+    )
+
+    # ── Phase 3b: User approval gate ──────────────────────────────
+    nodes["gate_strategy"] = GateNode(
+        id="gate_strategy",
+        evaluator_type="user",
+        gate_prompt=(
+            "Review the proposed workflow changes for the target mode. "
+            "The change specification describes what will be modified and why. "
+            "Approve to proceed with delegating to create mode, or provide feedback."
+        ),
+        reads={".factory/strategy/current.md"},
+    )
+
+    # ── Phase 4: Archivist (async) — archive the approved spec ────
+    nodes["archivist_plan"] = AgentNode(
+        id="archivist_plan",
+        role=AgentRole.ARCHIVIST,
+        prompt_template=(
+            "Archive the approved workflow optimization specification. "
+            "Record: target mode, identified weaknesses, proposed changes, "
+            "and the user's approval decision. "
+            "Write to .factory/archive/optimizer-plan.md."
+        ),
+        reads={".factory/strategy/current.md"},
+        writes={".factory/archive/optimizer-plan.md"},
+        timeout=300,
+        blocking=False,
+    )
+
+    # ── Phase 5: Delegate to create mode ──────────────────────────
+    nodes["delegate_create"] = FnNode(
+        id="delegate_create",
+        command=(
+            'factory ceo {project_path} --mode create '
+            '--focus "$OPTIMIZE_TARGET: $OPTIMIZE_CHANGES"'
+        ),
+        notes=(
+            "Delegate the actual workflow modification to create mode. "
+            "The CEO must substitute $OPTIMIZE_TARGET with the target mode name "
+            "and $OPTIMIZE_CHANGES with the one-line change summary from the "
+            "Strategist's specification. Create mode handles the full pipeline: "
+            "research existing workflow → strategist spec → builder implementation → "
+            "health check → code review → adversarial QA → precheck → archival."
+        ),
+        reads={".factory/strategy/current.md"},
+        writes={".factory/reviews/builder-latest.md"},
+    )
+
+    # ── Phase 6: Archivist (async) — record outcome ──────────────
+    nodes["archivist_outcome"] = AgentNode(
+        id="archivist_outcome",
+        role=AgentRole.ARCHIVIST,
+        prompt_template=(
+            "Archive the optimization outcome. "
+            "Record: what create mode produced, whether the PR was opened, "
+            "and the final state of the workflow change. "
+            "Write to .factory/archive/optimizer-outcome.md."
+        ),
+        reads={
+            ".factory/strategy/current.md",
+            ".factory/reviews/builder-latest.md",
+        },
+        writes={".factory/archive/optimizer-outcome.md"},
+        timeout=300,
+        blocking=False,
+    )
+
+    # ── Edges ─────────────────────────────────────────────────────
+    edges = [
+        # Study → Researcher
+        Edge(source="study", target="researcher"),
+        # Researcher → CEO gate
+        Edge(source="researcher", target="gate_research"),
+        # CEO gate: proceed → Strategist, reloop → Researcher
+        Edge(source="gate_research", target="strategist", condition=VerdictType.PROCEED),
+        Edge(source="gate_research", target="researcher", condition=VerdictType.RELOOP),
+        # Strategist → User approval gate
+        Edge(source="strategist", target="gate_strategy"),
+        # User gate: proceed → Archivist(async) + Delegate, reloop → Strategist
+        Edge(source="gate_strategy", target="archivist_plan", condition=VerdictType.PROCEED),
+        Edge(source="gate_strategy", target="delegate_create", condition=VerdictType.PROCEED),
+        Edge(source="gate_strategy", target="strategist", condition=VerdictType.RELOOP),
+        # Delegate → Archivist outcome
+        Edge(source="delegate_create", target="archivist_outcome"),
+    ]
+
+    # ── Trigger ───────────────────────────────────────────────────
+    def trigger(state: ProjectState, ctx: dict[str, Any]) -> bool:
+        return ctx.get("mode") == "optimize" and state == ProjectState.HAS_FACTORY
+
+    return Workflow(
+        name="optimize",
+        nodes=nodes,
+        edges=edges,
+        start_node="study",
         trigger=trigger,
     )
 
@@ -2561,6 +2780,7 @@ def register_all() -> dict[str, Workflow]:
         "meta": meta_workflow(),
         "refine": refine_workflow(),
         "create": create_workflow(),
+        "optimize": optimize_workflow(),
         "skill-refine": skill_refine_workflow(),
         "doc-generate": doc_generate_workflow(),
         "doc-update": doc_update_workflow(),

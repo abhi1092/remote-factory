@@ -704,7 +704,9 @@ def build_parser() -> argparse.ArgumentParser:
         "build, discover, improve, meta, design (research + brainstorm → spec → build), "
         "research (autonomous research optimization), review (on-demand PR review), "
         "qa (QA verification pipeline for PRs), "
-        "or create (meta-mode for creating new factory modes)",
+        "optimize (analyze and tune factory mode effectiveness — requires --focus <mode_name>), "
+        "or create (meta-mode for creating or updating factory modes — "
+        "use --focus \"mode_name: change\" to update an existing mode)",
     )
     p.add_argument(
         "--focus",

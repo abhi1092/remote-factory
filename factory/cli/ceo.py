@@ -390,6 +390,34 @@ def cmd_ceo(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
+    if mode == "optimize":
+        for flag in ("headless", "bg"):
+            if getattr(args, flag, False):
+                print(
+                    f"Error: --mode optimize requires foreground mode (incompatible with {flag})",
+                    file=sys.stderr,
+                )
+                return 1
+        if prompt_file:
+            print(
+                "Error: --mode optimize and --prompt are mutually exclusive.",
+                file=sys.stderr,
+            )
+            return 1
+        if not focus:
+            print(
+                "Error: --mode optimize requires --focus <target_mode_name>. "
+                "Example: factory ceo /path --mode optimize --focus improve",
+                file=sys.stderr,
+            )
+            return 1
+        if not Path(raw_path).expanduser().resolve().is_dir():
+            print(
+                "Error: --mode optimize requires an existing project directory.",
+                file=sys.stderr,
+            )
+            return 1
+
     if mode == "research":
         if prompt_file:
             print(
@@ -400,6 +428,7 @@ def cmd_ceo(args: argparse.Namespace) -> int:
             return 1
 
     create_description: str | None = None
+    update_existing_mode: str | None = None
     design_idea: str | None = None
     design_existing: bool = False
     research_ideation: str | None = None
@@ -416,6 +445,15 @@ def cmd_ceo(args: argparse.Namespace) -> int:
             return 1
         project_path, context = _resolve_input(raw_path, dir_name=dir_name)
         create_description = focus if focus else context
+        if create_description and ":" in create_description:
+            m = re.match(r"^([a-z_-]+):\s*(.+)$", create_description, re.DOTALL)
+            if m:
+                from factory.workflow.definitions import register_all
+
+                registered = register_all()
+                if m.group(1) in registered:
+                    update_existing_mode = m.group(1)
+                    create_description = m.group(2).strip()
     elif mode == "design" and _design_is_existing:
         project_path, context = _resolve_input(raw_path, dir_name=dir_name)
         design_existing = True
@@ -530,7 +568,7 @@ def cmd_ceo(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
-    if focus and mode not in ("improve", "research", "create") and not design_existing:
+    if focus and mode not in ("improve", "research", "create", "optimize") and not design_existing:
         print(
             f"Error: --focus (targeted mode) only works in improve, research, or create mode, got '{mode}'. "
             "The project must already be built before targeting specific items.",
@@ -577,10 +615,13 @@ def cmd_ceo(args: argparse.Namespace) -> int:
     ensure_skills(wt_path)
 
     interactive = (
-        design_existing or bool(design_idea) or bool(research_ideation) or mode == "create"
+        design_existing or bool(design_idea) or bool(research_ideation)
+        or mode == "create" or mode == "optimize"
     )
     if mode == "create":
         ceo_mode = "create"
+    elif mode == "optimize":
+        ceo_mode = "optimize"
     elif mode == "design":
         ceo_mode = "design"
     elif interactive:
@@ -621,6 +662,7 @@ def cmd_ceo(args: argparse.Namespace) -> int:
         clean_pr=clean_pr_resolved,
         display_mode=banner_mode,
         create_description=create_description,
+        update_existing_mode=update_existing_mode,
     )
 
     session_name = _derive_session_name(
@@ -1660,6 +1702,7 @@ def _build_ceo_task(
     clean_pr: bool = False,
     display_mode: str | None = None,
     create_description: str | None = None,
+    update_existing_mode: str | None = None,
 ) -> str:
     """Build the CEO agent task string from mode and optional context."""
     shown_mode = display_mode if display_mode is not None else mode
@@ -1723,7 +1766,40 @@ def _build_ceo_task(
             f"from the approved spec.\n"
         )
 
-    if create_description:
+    if create_description and update_existing_mode:
+        task += (
+            f"\n\n## Create Mode (Update Existing Mode)\n\n"
+            f"**Target mode:** {update_existing_mode}\n"
+            f"**Requested changes:** {create_description}\n\n"
+            f"You are updating an EXISTING factory workflow mode, not creating a new one.\n\n"
+            f"**Before making any changes:**\n"
+            f"1. Read the existing workflow definition: `factory workflow show {update_existing_mode}`\n"
+            f"2. Read the current SKILL.md: `cat skills/workflow-{update_existing_mode}/SKILL.md`\n"
+            f"3. Understand the current behavior before modifying it.\n\n"
+            f"**After implementing changes, verify ALL 20 registration points:**\n"
+            f"1. `factory workflow validate {update_existing_mode}` passes (exit 0)\n"
+            f"2. `factory workflow show {update_existing_mode}` reflects the changes\n"
+            f"3. `factory workflow export-skills --verify` succeeds\n"
+            f"4. SKILL.md under skills/workflow-{update_existing_mode}/ is regenerated\n"
+            f"5. WORKFLOW_META description in skill_export.py is still accurate\n"
+            f"6. CLI help text (factory ceo --help) still lists the mode correctly\n"
+            f"7. register_all() entry still resolves\n"
+            f"8. CycleState.mode Literal in models.py still includes the mode\n"
+            f"9. CEO_MODES and RUN_MODES in _helpers.py still include the mode\n"
+            f"10. CEO prompt (ceo.md) mode detection table is still correct\n"
+            f"11. All existing tests for this mode still pass\n"
+            f"12. No import errors in any factory module\n"
+            f"13. __all__ in definitions.py still exports the workflow function\n"
+            f"14. factory/workflow/registry.py resolves the mode\n"
+            f"15. factory/skill_cache.py will auto-invalidate (no action needed, but verify)\n"
+            f"16. _wizard.py examples are consistent\n"
+            f"17. CLAUDE.md mentions the mode correctly\n"
+            f"18. workflow/README.md references are accurate\n"
+            f"19. Trigger function still returns True for the correct context\n"
+            f"20. Start node is still valid and reachable from all edges\n\n"
+            f"Follow the Create workflow playbook in skills/workflow-create/SKILL.md.\n"
+        )
+    elif create_description:
         task += (
             f"\n\n## Create Mode (New Factory Mode)\n\n"
             f"**Mode description from user:**\n{create_description}\n\n"
@@ -1844,6 +1920,32 @@ def _build_ceo_task(
             "\n\nRun Create mode: this mode creates a new factory mode (workflow + skill + "
             "CLI wiring + tests) from the user's description above. "
             "The full step-by-step playbook is in your system prompt above."
+        )
+    elif mode == "optimize":
+        task += (
+            f"\n\n## Optimize Mode\n\n"
+            f"**Target mode:** {focus}\n\n"
+            f"You are analyzing the `{focus}` workflow mode to identify performance "
+            f"weaknesses and generate targeted improvements.\n\n"
+            f"**Workflow:**\n"
+            f"1. Study the project to gather baseline context\n"
+            f"2. Spawn the Researcher to analyze `{focus}` mode performance:\n"
+            f"   - Keep/revert rates from .factory/results.tsv\n"
+            f"   - Agent redirect/timeout patterns from .factory/events.jsonl\n"
+            f"   - CEO verdict patterns from .factory/reviews/\n"
+            f"   - Workflow definition via `factory workflow show {focus}`\n"
+            f"   - SKILL.md at skills/workflow-{focus}/SKILL.md\n"
+            f"3. Review the analysis (CEO gate)\n"
+            f"4. Spawn the Strategist to generate a change specification\n"
+            f"5. Present changes to user for approval\n"
+            f"6. Delegate to create mode: "
+            f"`factory ceo {{project_path}} --mode create --focus \"{focus}: <changes>\"`\n\n"
+            f"**Constraints:**\n"
+            f"- Max 1 optimization per invocation\n"
+            f"- Do NOT propose removing safety gates or QA verification steps\n"
+            f"- Prefer prompt/gate/timeout changes over structural graph rewiring\n"
+            f"- The change spec must be implementable in a single PR\n"
+            f"- Create mode handles all QA — do NOT run your own deep-QA pipeline\n"
         )
     else:
         task += (
