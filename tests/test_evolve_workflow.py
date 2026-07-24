@@ -31,8 +31,8 @@ class TestEvolveWorkflowStructure:
         wf = evolve_workflow()
         expected_nodes = {
             "baseline", "researcher", "gate_research",
-            "strategist", "gate_strategy", "begin", "builder",
-            "gate_build", "health_checker", "gate_eval",
+            "strategist", "gate_strategy", "begin", "pre_eval", "builder",
+            "gate_build", "health_checker", "post_eval", "gate_eval",
             "finalize", "archivist", "gate_convergence",
             "archivist_final",
         }
@@ -47,9 +47,11 @@ class TestEvolveWorkflowStructure:
         assert isinstance(wf.nodes["strategist"], AgentNode)
         assert isinstance(wf.nodes["gate_strategy"], GateNode)
         assert isinstance(wf.nodes["begin"], FnNode)
+        assert isinstance(wf.nodes["pre_eval"], FnNode)
         assert isinstance(wf.nodes["builder"], AgentNode)
         assert isinstance(wf.nodes["gate_build"], GateNode)
         assert isinstance(wf.nodes["health_checker"], AgentNode)
+        assert isinstance(wf.nodes["post_eval"], FnNode)
         assert isinstance(wf.nodes["gate_eval"], GateNode)
         assert isinstance(wf.nodes["finalize"], FnNode)
         assert isinstance(wf.nodes["archivist"], AgentNode)
@@ -80,6 +82,61 @@ class TestEvolveWorkflowStructure:
         """Builder has an extended timeout for code modification work."""
         wf = evolve_workflow()
         assert wf.nodes["builder"].timeout == 1200
+
+
+class TestEvolveInnerLoopIntegration:
+    """Tests for InnerLoop/CycleAnalyzer artifact production nodes."""
+
+    def test_evolve_pre_eval_node_exists(self):
+        """Gap 4: pre_eval FnNode copies current_score.json → eval_before.json."""
+        wf = evolve_workflow()
+        assert "pre_eval" in wf.nodes
+        node = wf.nodes["pre_eval"]
+        assert isinstance(node, FnNode)
+        assert ".factory/experiments/$EXP_ID/eval_before.json" in node.writes
+        assert ".factory/evolve/current_score.json" in node.reads
+
+    def test_evolve_post_eval_node_exists(self):
+        """Gap 2: post_eval FnNode emits eval.completed event."""
+        wf = evolve_workflow()
+        assert "post_eval" in wf.nodes
+        node = wf.nodes["post_eval"]
+        assert isinstance(node, FnNode)
+        assert ".factory/events.jsonl" in node.writes
+
+    def test_evolve_health_checker_dual_writes(self):
+        """Gap 1: health_checker writes to BOTH review file and experiment dir."""
+        wf = evolve_workflow()
+        hc = wf.nodes["health_checker"]
+        assert ".factory/reviews/health-check.md" in hc.writes
+        assert ".factory/experiments/$EXP_ID/eval_after.json" in hc.writes
+
+    def test_evolve_baseline_writes_exp000(self):
+        """Gap 3: baseline declares experiment 000 artifact in writes."""
+        wf = evolve_workflow()
+        baseline = wf.nodes["baseline"]
+        assert ".factory/experiments/000/eval_before.json" in baseline.writes
+
+    def test_evolve_pre_eval_wiring(self):
+        """pre_eval is wired between begin and builder."""
+        wf = evolve_workflow()
+        edges = [(e.source, e.target, e.condition) for e in wf.edges]
+        assert ("begin", "pre_eval", None) in edges
+        assert ("pre_eval", "builder", None) in edges
+        assert ("begin", "builder", None) not in edges
+
+    def test_evolve_post_eval_wiring(self):
+        """post_eval is wired between health_checker and gate_eval."""
+        wf = evolve_workflow()
+        edges = [(e.source, e.target, e.condition) for e in wf.edges]
+        assert ("health_checker", "post_eval", None) in edges
+        assert ("post_eval", "gate_eval", None) in edges
+        assert ("health_checker", "gate_eval", None) not in edges
+
+    def test_evolve_node_count(self):
+        """Evolve workflow has 16 nodes after adding pre_eval and post_eval."""
+        wf = evolve_workflow()
+        assert len(wf.nodes) == 16
 
 
 class TestEvolveWorkflowEdges:
