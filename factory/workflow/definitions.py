@@ -3314,13 +3314,17 @@ def evolve_workflow() -> Workflow:
             "3. Call evaluate_solution(initial_program) via MCP to get baseline score\n"
             "4. Write the eval result to .factory/baseline/eval.json\n"
             "5. Write the current best code to .factory/evolve/current_best.py\n"
-            "6. Write the current score to .factory/evolve/current_score.json"
+            "6. Write the current score to .factory/evolve/current_score.json\n"
+            "7. Copy the eval result to .factory/experiments/000/eval_before.json "
+            "(same content as baseline/eval.json — enables CycleAnalyzer artifact discovery)\n"
+            "8. Emit eval.completed event to .factory/events.jsonl with the baseline composite score"
         ),
         writes={
             ".factory/baseline/initial.py",
             ".factory/baseline/eval.json",
             ".factory/evolve/current_best.py",
             ".factory/evolve/current_score.json",
+            ".factory/experiments/000/eval_before.json",
         },
     )
 
@@ -3427,6 +3431,29 @@ def evolve_workflow() -> Workflow:
         writes={".factory/experiments/current_id"},
     )
 
+    # Pre-eval: copy current score snapshot to experiment's eval_before.json
+    nodes["pre_eval"] = FnNode(
+        id="pre_eval",
+        command=(
+            'python3 -c "'
+            "import shutil; from pathlib import Path; "
+            "src = Path('{project_path}/.factory/evolve/current_score.json'); "
+            "exp_dir = Path('{project_path}/.factory/experiments/$EXP_ID'); "
+            "exp_dir.mkdir(parents=True, exist_ok=True); "
+            "shutil.copy2(str(src), str(exp_dir / 'eval_before.json')) "
+            "if src.exists() else None; "
+            "print('eval_before.json written to', exp_dir)"
+            '"'
+        ),
+        notes=(
+            "Copy current score snapshot to experiment's eval_before.json. "
+            "The CEO must substitute $EXP_ID with the experiment ID from begin. "
+            "This enables CycleAnalyzer to compute per-experiment score deltas."
+        ),
+        reads={".factory/evolve/current_score.json"},
+        writes={".factory/experiments/$EXP_ID/eval_before.json"},
+    )
+
     # Builder: apply the hypothesis to produce a candidate
     nodes["builder"] = AgentNode(
         id="builder",
@@ -3489,7 +3516,10 @@ def evolve_workflow() -> Workflow:
             "   - If combined_score <= current_score: REVERT ('Score degraded or unchanged')\n"
             "   - If eval_time > 10 * baseline_eval_time: REVERT ('Unacceptable slowdown')\n"
             "   - Otherwise: KEEP ('Score improved')\n"
-            "7. Write eval results to .factory/experiments/$EXP_ID/eval_after.json\n"
+            "7. Write structured eval results as JSON to "
+            ".factory/experiments/$EXP_ID/eval_after.json with these exact fields:\n"
+            '   {"combined_score": <float>, "validity": <bool>, '
+            '"eval_time": <float>, "sum_radii": <float>, "target_ratio": <float>}\n'
             "8. Write verdict with KEEP/REVERT and rationale to "
             ".factory/reviews/health-check.md\n"
             "Include in the verdict: score_before, score_after, delta, validity, eval_time."
@@ -3501,7 +3531,53 @@ def evolve_workflow() -> Workflow:
         },
         writes={
             ".factory/reviews/health-check.md",
+            ".factory/experiments/$EXP_ID/eval_after.json",
         },
+    )
+
+    # Post-eval: emit eval.completed event to events.jsonl
+    nodes["post_eval"] = FnNode(
+        id="post_eval",
+        command=(
+            'python3 -c "'
+            "import json; from pathlib import Path; from datetime import datetime, timezone; "
+            "score = None; "
+            "ea = Path('{project_path}/.factory/experiments/$EXP_ID/eval_after.json'); "
+            "if ea.exists(): "
+            "    d = json.loads(ea.read_text()); "
+            "    score = d.get('combined_score', d.get('total')); "
+            "if score is None: "
+            "    hc = Path('{project_path}/.factory/reviews/health-check.md'); "
+            "    if hc.exists(): "
+            "        for line in hc.read_text().splitlines(): "
+            "            if 'score_after' in line.lower() or 'combined_score' in line.lower(): "
+            "                for part in line.split(':'): "
+            "                    part = part.strip().rstrip(',%); '); "
+            "                    try: score = float(part); break; "
+            "                    except ValueError: pass; "
+            "            if score is not None: break; "
+            "event = {"
+            "    'type': 'eval.completed', "
+            "    'data': {'composite': score if score is not None else 0.0, 'exp_id': '$EXP_ID'}, "
+            "    'timestamp': datetime.now(timezone.utc).isoformat(), "
+            "}; "
+            "events_path = Path('{project_path}/.factory/events.jsonl'); "
+            "with open(events_path, 'a') as f: "
+            "    f.write(json.dumps(event) + chr(10)); "
+            "print('eval.completed event emitted, composite=', score)"
+            '"'
+        ),
+        notes=(
+            "Emit eval.completed event to events.jsonl after Health Checker finishes. "
+            "The CEO must substitute $EXP_ID. "
+            "Reads the composite score from eval_after.json (primary) or health-check.md (fallback), "
+            "then appends a structured event for CycleAnalyzer._extract_scores()."
+        ),
+        reads={
+            ".factory/experiments/$EXP_ID/eval_after.json",
+            ".factory/reviews/health-check.md",
+        },
+        writes={".factory/events.jsonl"},
     )
 
     # CEO gate on eval results — applies keep/revert
@@ -3611,15 +3687,17 @@ def evolve_workflow() -> Workflow:
         Edge(source="gate_strategy", target="begin", condition=VerdictType.PROCEED),
         Edge(source="gate_strategy", target="strategist", condition=VerdictType.RELOOP),
 
-        # Begin → builder
-        Edge(source="begin", target="builder"),
+        # Begin → pre_eval → builder (pre_eval copies current_score.json → eval_before.json)
+        Edge(source="begin", target="pre_eval"),
+        Edge(source="pre_eval", target="builder"),
         # Builder → build gate
         Edge(source="builder", target="gate_build"),
         Edge(source="gate_build", target="health_checker", condition=VerdictType.PROCEED),
         Edge(source="gate_build", target="builder", condition=VerdictType.RELOOP),
 
-        # Health checker → eval gate
-        Edge(source="health_checker", target="gate_eval"),
+        # Health checker → post_eval → eval gate (post_eval emits eval.completed event)
+        Edge(source="health_checker", target="post_eval"),
+        Edge(source="post_eval", target="gate_eval"),
         Edge(source="gate_eval", target="finalize", condition=VerdictType.PROCEED),
 
         # Finalize → archivist (async)
