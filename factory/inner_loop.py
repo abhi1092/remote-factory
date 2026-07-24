@@ -1,7 +1,11 @@
 """InnerLoop — model-like wrapper for mode + evaluator that an outer-loop optimizer calls.
 
+CycleAnalyzer handles execution tracing (what agents ran, costs, verdicts).
+Evaluator handles score interpretation (parses evaluator-specific output artifacts).
+InnerLoop composes both.
+
 Usage:
-    evaluator = CirclePackingEvaluator(evaluator_path, initial_program_path)
+    evaluator = CirclePackingEvaluator()
     loop = InnerLoop(project_dir, mode="evolve", evaluator=evaluator)
 
     for i in range(budget):
@@ -12,12 +16,9 @@ Usage:
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import subprocess
 import sys
-import tempfile
-import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -38,63 +39,62 @@ class EvalResult:
 
 @runtime_checkable
 class Evaluator(Protocol):
-    """Hook for plugging in different evaluators."""
+    """Interface for parsing evaluator-specific output artifacts.
 
-    def evaluate(self, code: str) -> EvalResult: ...
+    Each implementation knows the output format of one evaluator.
+    It reads artifact files that the inner loop already produced —
+    it doesn't run the evaluator itself.
+    """
 
-    def get_info(self) -> dict: ...
+    def parse(self, artifact_path: Path) -> EvalResult:
+        """Parse an evaluator output artifact into a structured EvalResult."""
+        ...
+
+    def parse_many(self, artifact_paths: list[Path]) -> EvalResult:
+        """Parse multiple artifacts, returning the most recent/best result."""
+        ...
+
+    def get_info(self) -> dict:
+        """Return static info about this evaluator (name, target, etc.)."""
+        ...
 
 
 class CirclePackingEvaluator:
-    """Wraps skydiscover's circle packing evaluator for direct use."""
+    """Parses output artifacts from skydiscover's circle packing evaluator.
 
-    def __init__(self, evaluator_path: Path, initial_program_path: Path | None = None) -> None:
-        self.evaluator_path = Path(evaluator_path)
-        self.eval_fn = self._load_evaluator(self.evaluator_path)
-        self.initial_program: str | None = None
-        if initial_program_path:
-            self.initial_program = Path(initial_program_path).read_text()
+    Knows how to read JSON files with the schema:
+        {sum_radii, target_ratio, validity, eval_time, combined_score}
+    """
 
-    def evaluate(self, code: str) -> EvalResult:
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
-            f.write(code)
-            tmp_path = f.name
+    def __init__(self, target: float = 2.635) -> None:
+        self.target = target
+
+    def parse(self, artifact_path: Path) -> EvalResult:
         try:
-            result = self.eval_fn(tmp_path)
-            if not isinstance(result, dict):
-                return EvalResult(score=0.0, valid=False)
-            return EvalResult(
-                score=float(result.get("combined_score", 0.0)),
-                metrics={k: float(v) for k, v in result.items() if isinstance(v, (int, float))},
-                valid=result.get("validity", 0.0) == 1.0,
-                artifacts=[tmp_path],
-            )
-        except Exception as e:
-            return EvalResult(score=0.0, valid=False, metrics={"error": 0.0})
+            data = json.loads(Path(artifact_path).read_text())
+        except (json.JSONDecodeError, OSError):
+            return EvalResult(score=0.0, valid=False)
+        return EvalResult(
+            score=float(data.get("combined_score", 0.0)),
+            metrics={k: float(v) for k, v in data.items() if isinstance(v, (int, float))},
+            valid=data.get("validity", 0.0) == 1.0,
+            artifacts=[str(artifact_path)],
+        )
+
+    def parse_many(self, artifact_paths: list[Path]) -> EvalResult:
+        best = EvalResult(score=0.0, valid=False)
+        for p in artifact_paths:
+            result = self.parse(p)
+            if result.score > best.score:
+                best = result
+        return best
 
     def get_info(self) -> dict:
         return {
-            "benchmark": self.evaluator_path.parent.name,
-            "evaluator_path": str(self.evaluator_path),
-            "initial_program": self.initial_program,
+            "benchmark": "circle_packing",
+            "target": self.target,
+            "metrics": ["sum_radii", "target_ratio", "validity", "eval_time", "combined_score"],
         }
-
-    @staticmethod
-    def _load_evaluator(evaluator_path: Path):
-        evaluator_path = evaluator_path.resolve()
-        eval_dir = str(evaluator_path.parent)
-        if eval_dir not in sys.path:
-            sys.path.insert(0, eval_dir)
-        module_name = f"_eval_{uuid.uuid4().hex}"
-        spec = importlib.util.spec_from_file_location(module_name, evaluator_path)
-        if spec is None or spec.loader is None:
-            raise ImportError(f"Cannot load module from {evaluator_path}")
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[module_name] = module
-        spec.loader.exec_module(module)
-        if not hasattr(module, "evaluate"):
-            raise AttributeError(f"No evaluate() function in {evaluator_path}")
-        return module.evaluate
 
 
 class InnerLoop:
@@ -116,7 +116,14 @@ class InnerLoop:
         self._history: list[CycleRecord] = []
 
     def step(self, directives: dict[str, Any] | None = None) -> CycleRecord:
-        """Run one inner-loop cycle and return structured results."""
+        """Run one inner-loop cycle and return structured results.
+
+        1. Write directives (steering from outer loop) if provided
+        2. Run the factory mode via subprocess
+        3. CycleAnalyzer reads execution artifacts (agents, costs, verdicts)
+        4. Evaluator parses eval-specific artifacts (scores, metrics)
+        5. Return composed CycleRecord
+        """
         if directives:
             self._write_directives(directives)
 
@@ -126,51 +133,15 @@ class InnerLoop:
             cwd=self.project_dir,
         )
 
-        analyzer = CycleAnalyzer(self.factory_dir, workflow=self.workflow)
-        record = analyzer.latest()
-        if record is None:
-            record = CycleRecord(
-                cycle_number=self._step_count + 1,
-                mode=self.mode,
-                started_at=None,
-                ended_at=None,
-                duration_s=0,
-                score_start=None,
-                score_end=None,
-                score_delta=None,
-            )
-
+        record = self._collect_results()
         record.cycle_number = self._step_count + 1
-
-        if self.evaluator:
-            best = self.current_best()
-            if best:
-                eval_result = self.evaluator.evaluate(best)
-                record.score_end = eval_result.score
-                record.eval_artifacts = eval_result.artifacts
-
         self._step_count += 1
         self._history.append(record)
         return record
 
-    def evaluate(self, code: str | Path) -> EvalResult:
-        """Evaluate a solution directly, outside the mode cycle."""
-        if not self.evaluator:
-            raise RuntimeError("No evaluator configured")
-        if isinstance(code, Path):
-            code = code.read_text()
-        return self.evaluator.evaluate(code)
-
-    def current_best(self) -> str | None:
-        """Return the current best solution code."""
-        candidates = [
-            self.factory_dir / "evolve" / "current_best.py",
-            self.factory_dir / "evolve" / "candidate.py",
-        ]
-        for p in candidates:
-            if p.exists():
-                return p.read_text()
-        return None
+    def collect(self) -> CycleRecord:
+        """Collect results without running a cycle. Useful after manual runs."""
+        return self._collect_results()
 
     def score_trajectory(self) -> list[float]:
         """Score history across all steps."""
@@ -186,6 +157,44 @@ class InnerLoop:
     def history(self) -> list[CycleRecord]:
         """All cycle records from this session."""
         return list(self._history)
+
+    def _collect_results(self) -> CycleRecord:
+        """Read execution artifacts + eval artifacts, compose into CycleRecord."""
+        analyzer = CycleAnalyzer(self.factory_dir, workflow=self.workflow)
+        record = analyzer.latest()
+        if record is None:
+            record = CycleRecord(
+                cycle_number=0,
+                mode=self.mode,
+                started_at=None,
+                ended_at=None,
+                duration_s=0,
+                score_start=None,
+                score_end=None,
+                score_delta=None,
+            )
+
+        if self.evaluator and record.experiments:
+            for exp in record.experiments:
+                eval_files = [
+                    Path(a) for a in exp.eval_artifacts
+                    if a.endswith(".json") and "eval" in Path(a).name
+                ]
+                if eval_files:
+                    eval_result = self.evaluator.parse_many(eval_files)
+                    if eval_result.valid:
+                        exp.score_after = eval_result.score
+
+            last_eval_files = [
+                Path(a) for exp in record.experiments
+                for a in exp.eval_artifacts
+                if a.endswith(".json") and "eval" in Path(a).name
+            ]
+            if last_eval_files:
+                final = self.evaluator.parse(last_eval_files[-1])
+                record.score_end = final.score
+
+        return record
 
     def _write_directives(self, directives: dict[str, Any]) -> None:
         """Write outer-loop directives as a factory message."""
