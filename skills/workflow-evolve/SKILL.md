@@ -28,7 +28,7 @@ python3 -c "import json; from pathlib import Path; p = Path('$PROJECT_PATH/.fact
 ## Phase 1: Researcher
 
 ```bash
-factory agent researcher --task "Optimization technique research for code evolution. Read the initial program at .factory/baseline/initial.py. Identify EVOLVE-BLOCK-START/END markers to understand mutable regions. Analyze the algorithm structure, data representations, and constants. Search the web for optimization techniques relevant to the problem domain (extract domain from the benchmark name in .factory/baseline/eval.json). For circle packing: search for gradient descent, simulated annealing, constraint satisfaction, and constructive packing strategies. Read .factory/archive/ for prior knowledge on similar optimization problems. Write findings to .factory/strategy/research.md covering: code structure analysis (mutable vs fixed regions), candidate optimization techniques ordered by expected impact, parameter tuning opportunities, algorithmic alternatives.
+factory agent researcher --task "Optimization technique research for code evolution. Read the initial program at .factory/baseline/initial.py. Identify EVOLVE-BLOCK-START/END markers to understand mutable regions. Analyze the algorithm structure, data representations, and constants. Search the web for optimization techniques relevant to the problem domain (extract domain from the benchmark name in .factory/baseline/eval.json). Read .factory/baseline/eval.json to identify the benchmark problem domain and its target metric. Based on the discovered domain, search for relevant optimization techniques, heuristics, and algorithmic strategies specific to that problem type. Read .factory/archive/ for prior knowledge on similar optimization problems. Write findings to .factory/strategy/research.md covering: code structure analysis (mutable vs fixed regions), candidate optimization techniques ordered by expected impact, parameter tuning opportunities, algorithmic alternatives.
 Read: .factory/baseline/eval.json, .factory/baseline/initial.py
 Write output to: .factory/strategy/research.md" --project "$PROJECT_PATH" --timeout 600
 ```
@@ -118,7 +118,7 @@ REDIRECT to builder if constraints violated.
 ```bash
 factory agent health_checker --task "Evaluate the candidate program via MCP and compare scores. 1. Read the candidate code from .factory/evolve/candidate.py
 2. Call evaluate_solution(candidate_code) via MCP tool
-3. Parse the response: combined_score, validity, eval_time, sum_radii
+3. Parse the evaluate_solution() response fields (combined_score, validity, eval_time, and any domain-specific metrics)
 4. Read current best score from .factory/evolve/current_score.json
 5. Read baseline eval_time from .factory/baseline/eval.json
 6. Apply verdict logic:
