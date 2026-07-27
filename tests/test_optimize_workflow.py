@@ -37,12 +37,14 @@ def test_optimize_registered():
 
 
 def test_optimize_node_structure():
-    """optimize workflow has exactly the expected 8 nodes."""
+    """optimize workflow has exactly the expected 12 nodes."""
     wf = optimize_workflow()
     expected = {
         "study", "researcher", "gate_research",
         "strategist", "gate_strategy",
-        "archivist_plan", "delegate_create", "archivist_outcome",
+        "archivist_plan",
+        "run_target", "collect_cycle", "reflect_researcher", "gate_convergence",
+        "delegate_create", "archivist_outcome",
     }
     assert set(wf.nodes.keys()) == expected
 
@@ -81,9 +83,9 @@ def test_optimize_start_node():
 
 
 def test_optimize_edge_count():
-    """optimize workflow has exactly 9 edges."""
+    """optimize workflow has exactly 14 edges."""
     wf = optimize_workflow()
-    assert len(wf.edges) == 9
+    assert len(wf.edges) == 14
 
 
 def test_optimize_user_gate_present():

@@ -1887,7 +1887,153 @@ def optimize_workflow() -> Workflow:
         blocking=False,
     )
 
-    # ── Phase 5: Delegate to create mode ──────────────────────────
+    # ── Phase 5a: Run target mode (inner loop start) ───────────────
+    nodes["run_target"] = FnNode(
+        id="run_target",
+        command=(
+            'factory ceo {project_path} --mode $OPTIMIZE_TARGET --no-worktree'
+        ),
+        notes=(
+            "Run one cycle of the target mode to produce execution artifacts. "
+            "The CEO must substitute $OPTIMIZE_TARGET with the target mode name "
+            "from the --focus argument (e.g., 'improve', 'research', 'build'). "
+            "--no-worktree prevents nested worktree creation. "
+            "Produces: events.jsonl (appends), reviews/*.md, experiments/NNN/, results.tsv."
+        ),
+        reads=set(),
+        writes={
+            ".factory/events.jsonl",
+            ".factory/results.tsv",
+        },
+    )
+
+    # ── Phase 5b: Collect cycle data ─────────────────────────────
+    nodes["collect_cycle"] = FnNode(
+        id="collect_cycle",
+        command=(
+            'python3 -c "'
+            "from pathlib import Path; "
+            "import json; "
+            "from dataclasses import asdict; "
+            "from factory.inner_loop import InnerLoop; "
+            "loop = InnerLoop("
+            "    project_dir=Path('{project_path}'), "
+            "    mode='$OPTIMIZE_TARGET', "
+            "    evaluator=None, "
+            "); "
+            "record = loop.collect(); "
+            "data = asdict(record); "
+            "out = Path('{project_path}/.factory/reviews/cycle-analysis.json'); "
+            "out.parent.mkdir(parents=True, exist_ok=True); "
+            "out.write_text(json.dumps(data, indent=2, default=str)); "
+            "print('CycleRecord written to', out)"
+            '"'
+        ),
+        notes=(
+            "Collect execution artifacts into structured CycleRecord JSON. "
+            "Uses InnerLoop.collect() which internally calls CycleAnalyzer.latest(). "
+            "The CEO must substitute $OPTIMIZE_TARGET with the target mode name. "
+            "dataclasses.asdict() handles all nested dataclasses (AgentStep, "
+            "ExperimentRecord, NodeTrace). default=str handles set serialization."
+        ),
+        reads={
+            ".factory/events.jsonl",
+            ".factory/results.tsv",
+        },
+        writes={".factory/reviews/cycle-analysis.json"},
+    )
+
+    # ── Phase 5c: Reflect — analyze cycle data ───────────────────
+    nodes["reflect_researcher"] = AgentNode(
+        id="reflect_researcher",
+        role=AgentRole.RESEARCHER,
+        prompt_template=(
+            "Cycle-based mode performance analysis (reflection pass).\n\n"
+            "Read the structured cycle data at .factory/reviews/cycle-analysis.json. "
+            "This file contains a complete CycleRecord with:\n"
+            "- Execution metrics: score_start, score_end, score_delta, score_trajectory, "
+            "keep_rate, kept/reverted/errored counts\n"
+            "- Cost breakdown: total_cost_usd, cost_by_agent (per-role spend)\n"
+            "- Experiment details: experiments[] with exp_id, hypothesis, verdict, "
+            "score_before, score_after, score_delta, cost_usd, duration_s\n"
+            "- Agent-level data: steps[] with role, duration_s, cost_usd, succeeded, error\n"
+            "- Node trace: node_trace{} with node_id, node_type, artifact_exists\n"
+            "- Convergence signals: consecutive_reverts, plateau_detected, stuck_detected\n\n"
+            "Analyze the data to identify:\n\n"
+            "1. **Score effectiveness:**\n"
+            "   - score_start vs score_end — did the cycle improve the project?\n"
+            "   - score_trajectory shape — improving, plateauing, or regressing?\n"
+            "   - Correlation between keep_rate and score improvement\n\n"
+            "2. **Bottlenecks:**\n"
+            "   - steps[]: which agents take longest? Any with succeeded=false?\n"
+            "   - cost_by_agent: which agents consume the most budget?\n"
+            "   - experiments[]: which experiments have the worst score_delta?\n\n"
+            "3. **Quality signals:**\n"
+            "   - consecutive_reverts: is the mode stuck?\n"
+            "   - plateau_detected / stuck_detected: has the mode exhausted its approach?\n"
+            "   - keep_rate: what fraction of experiments are productive?\n\n"
+            "4. **Hypothesis patterns:**\n"
+            "   - Which experiment hypotheses yielded positive deltas?\n"
+            "   - Which experiments were reverted and why?\n"
+            "   - Are there patterns in what succeeds vs fails?\n\n"
+            "Also read .factory/strategy/research-mode-analysis.md if it exists "
+            "(from the initial static analysis or prior reflection passes). Compare:\n"
+            "- Is empirical data confirming or contradicting the static analysis?\n"
+            "- Are bottlenecks the same or different from what was predicted?\n\n"
+            "Write findings to .factory/strategy/research-mode-analysis.md covering:\n"
+            "- Cycle summary (score delta, keep rate, cost, duration)\n"
+            "- Bottleneck identification (slowest agents, failing steps, costliest roles)\n"
+            "- Hypothesis quality analysis (what worked, what didn't)\n"
+            "- Convergence assessment (is the mode improving its own performance?)\n"
+            "- Specific, actionable recommendations (which workflow components need tuning)"
+        ),
+        reads={
+            ".factory/reviews/cycle-analysis.json",
+            ".factory/strategy/research-mode-analysis.md",
+        },
+        writes={".factory/strategy/research-mode-analysis.md"},
+        timeout=600,
+    )
+
+    # ── Phase 5d: Convergence gate ───────────────────────────────
+    nodes["gate_convergence"] = GateNode(
+        id="gate_convergence",
+        evaluator_type="agent",
+        evaluator_role=AgentRole.CEO,
+        gate_prompt=(
+            "Review the cycle analysis at .factory/strategy/research-mode-analysis.md "
+            "and the raw cycle data at .factory/reviews/cycle-analysis.json.\n\n"
+            "Check convergence criteria:\n\n"
+            "1. **Hard cap:** If 5 or more inner loop cycles have completed, "
+            "PROCEED unconditionally. This prevents infinite loops.\n\n"
+            "2. **Sufficient data?**\n"
+            "   - At least 2 inner loop cycles should complete before proceeding\n"
+            "   - Check cycle_number in cycle-analysis.json\n\n"
+            "3. **Diminishing returns?**\n"
+            "   - plateau_detected == true in the latest cycle\n"
+            "   - score_trajectory flattening (last 3 deltas all < 0.01)\n"
+            "   - keep_rate < 0.3 for the latest cycle\n\n"
+            "4. **Clear optimization target?**\n"
+            "   - Researcher identified a specific bottleneck (slowest agent, "
+            "failing step, stuck category)\n"
+            "   - Recommendation is actionable (prompt tweak, gate criteria, "
+            "timeout adjustment, edge rewiring)\n\n"
+            "RELOOP to run_target if:\n"
+            "- Fewer than 2 cycles completed AND no clear bottleneck identified\n"
+            "- Score is still improving significantly (delta > 0.05)\n\n"
+            "PROCEED to delegate_create if:\n"
+            "- 5+ cycles completed (hard cap — always proceed)\n"
+            "- OR at least 2 cycles AND a clear, actionable optimization target\n"
+            "- OR plateau_detected == true AND a recommendation exists\n"
+            "- OR stuck_detected == true (mode needs structural changes)"
+        ),
+        reads={
+            ".factory/strategy/research-mode-analysis.md",
+            ".factory/reviews/cycle-analysis.json",
+        },
+    )
+
+    # ── Phase 6: Delegate to create mode ─────────────────────────
     nodes["delegate_create"] = FnNode(
         id="delegate_create",
         command=(
@@ -1936,10 +2082,17 @@ def optimize_workflow() -> Workflow:
         Edge(source="gate_research", target="researcher", condition=VerdictType.RELOOP),
         # Strategist → User approval gate
         Edge(source="strategist", target="gate_strategy"),
-        # User gate: proceed → Archivist(async) + Delegate, reloop → Strategist
+        # User gate: proceed → Archivist(async) + Inner Loop, reloop → Strategist
         Edge(source="gate_strategy", target="archivist_plan", condition=VerdictType.PROCEED),
-        Edge(source="gate_strategy", target="delegate_create", condition=VerdictType.PROCEED),
+        Edge(source="gate_strategy", target="run_target", condition=VerdictType.PROCEED),
         Edge(source="gate_strategy", target="strategist", condition=VerdictType.RELOOP),
+        # Inner loop: run → collect → reflect → convergence gate
+        Edge(source="run_target", target="collect_cycle"),
+        Edge(source="collect_cycle", target="reflect_researcher"),
+        Edge(source="reflect_researcher", target="gate_convergence"),
+        # Convergence: reloop → run_target, proceed → delegate
+        Edge(source="gate_convergence", target="run_target", condition=VerdictType.RELOOP),
+        Edge(source="gate_convergence", target="delegate_create", condition=VerdictType.PROCEED),
         # Delegate → Archivist outcome
         Edge(source="delegate_create", target="archivist_outcome"),
     ]
