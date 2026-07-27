@@ -4,9 +4,11 @@ baseline:
   command: python3 -c "import json; from pathlib import Path; p = Path('{project_path}/.factory/baseline');
     p.mkdir(parents=True, exist_ok=True); Path('{project_path}/.factory/evolve').mkdir(parents=True,
     exist_ok=True); print('Baseline directory ready. CEO must call get_benchmark_info()
-    and evaluate_solution() via MCP, then write initial.py and eval.json to .factory/baseline/.')"
+    via MCP, extract domain context to benchmark_info.json, then write initial.py
+    and eval.json to .factory/baseline/.')"
   reads: []
   writes:
+  - .factory/baseline/benchmark_info.json
   - .factory/baseline/eval.json
   - .factory/baseline/initial.py
   - .factory/evolve/current_best.py
@@ -21,6 +23,7 @@ researcher:
   role: researcher
   blocking: 'true'
   reads:
+  - .factory/baseline/benchmark_info.json
   - .factory/baseline/eval.json
   - .factory/baseline/initial.py
   writes:
@@ -32,17 +35,18 @@ researcher:
     task_prompt_researcher: 'Optimization technique research for code evolution. Read
       the initial program at .factory/baseline/initial.py. Identify EVOLVE-BLOCK-START/END
       markers to understand mutable regions. Analyze the algorithm structure, data
-      representations, and constants. Search the web for optimization techniques relevant
-      to the problem domain (extract domain from the benchmark name in .factory/baseline/eval.json).
-      Read .factory/baseline/eval.json to identify the benchmark problem domain and
-      its target metric. Based on the discovered domain, search for relevant optimization
-      techniques, heuristics, and algorithmic strategies specific to that problem
-      type. Read .factory/archive/ for prior knowledge on similar optimization problems.
-      Write findings to .factory/strategy/research.md covering: code structure analysis
+      representations, and constants. Read .factory/baseline/benchmark_info.json for
+      structured domain context: problem description, evaluation criteria, constraints,
+      and optimization target. Use this context to understand the problem class, optimization
+      objectives, and solution space. Search the web for optimization techniques,
+      heuristics, and algorithmic strategies specific to this problem domain. Read
+      .factory/archive/ for prior knowledge on similar optimization problems. Write
+      findings to .factory/strategy/research.md covering: code structure analysis
       (mutable vs fixed regions), candidate optimization techniques ordered by expected
-      impact, parameter tuning opportunities, algorithmic alternatives.
+      impact (grounded in evaluation criteria), parameter tuning opportunities, algorithmic
+      alternatives.
 
-      Read: .factory/baseline/eval.json, .factory/baseline/initial.py
+      Read: .factory/baseline/benchmark_info.json, .factory/baseline/eval.json, .factory/baseline/initial.py
 
       Write output to: .factory/strategy/research.md'
     timeout_researcher: '600'
@@ -70,6 +74,7 @@ strategist:
   role: strategist
   blocking: 'true'
   reads:
+  - .factory/baseline/benchmark_info.json
   - .factory/evolve/current_best.py
   - .factory/evolve/current_score.json
   - .factory/strategy/research.md
@@ -80,17 +85,22 @@ strategist:
     condition: null
   slots:
     task_prompt_strategist: 'Generate ONE code modification hypothesis for the evolve
-      loop. Read research at .factory/strategy/research.md. Read the current best
-      code at .factory/evolve/current_best.py. Read experiment history at .factory/results.tsv
-      and .factory/experiments/. Read the current score from .factory/evolve/current_score.json.
-      The hypothesis MUST be a specific code change within EVOLVE-BLOCK boundaries.
-      Follow FEEC priority: Fix (bugs) > Exploit (tune parameters of proven approach)
-      > Explore (new algorithm) > Combine (hybrid strategies). If the last 3 experiments
-      were all reverted, note this — the CEO will trigger fresh research. Write a
-      single hypothesis to .factory/strategy/current.md with: Category (algorithm-change|parameter-tuning|data-structure|initialization),
+      loop. Read research at .factory/strategy/research.md. Read domain context at
+      .factory/baseline/benchmark_info.json — use evaluation_criteria to align hypotheses
+      with what the benchmark rewards, and constraints to ensure modifications stay
+      within limits. Read the current best code at .factory/evolve/current_best.py.
+      Read experiment history at .factory/results.tsv and .factory/experiments/. Read
+      the current score from .factory/evolve/current_score.json. The hypothesis MUST
+      be a specific code change within EVOLVE-BLOCK boundaries. Follow FEEC priority:
+      Fix (bugs) > Exploit (tune parameters of proven approach) > Explore (new algorithm)
+      > Combine (hybrid strategies). If the last 2 experiments were both reverted
+      AND from the same FEEC family (same Category field: algorithm-change, parameter-tuning,
+      data-structure, or initialization), note this — the CEO will trigger fresh research.
+      Write a single hypothesis to .factory/strategy/current.md with: Category (algorithm-change|parameter-tuning|data-structure|initialization),
       Rationale, Modification (specific code), Expected Impact, Risk.
 
-      Read: .factory/evolve/current_best.py, .factory/evolve/current_score.json, .factory/strategy/research.md
+      Read: .factory/baseline/benchmark_info.json, .factory/evolve/current_best.py,
+      .factory/evolve/current_score.json, .factory/strategy/research.md
 
       Write output to: .factory/strategy/current.md'
     timeout_strategist: '600'
@@ -117,12 +127,14 @@ gate_strategy:
 
       4) Is the expected impact plausible?
 
-      5) Check stuck detection: if the last 3 experiments in .factory/results.tsv
-      were all REVERT, trigger RELOOP to researcher for fresh perspective instead
-      of proceeding to builder.
+      5) Check stuck detection: Read .factory/results.tsv and extract the Category
+      field from the last 2 experiment hypotheses. If BOTH of the last 2 experiments
+      were REVERT AND had the same Category (same FEEC family), trigger MANDATORY
+      RELOOP to researcher for fresh perspective instead of proceeding to builder.
 
       PROCEED if hypothesis is sound and not stuck. RELOOP to strategist if hypothesis
-      is vague or wrong category. RELOOP to researcher if stuck (3 consecutive reverts).'
+      is vague or wrong category. RELOOP to researcher if stuck (2 consecutive same-family
+      reverts).'
     max_iterations_gate_strategy: '3'
 begin:
   type: FnNode
@@ -242,9 +254,11 @@ health_checker:
       \ logic:\n   - If validity == false: REVERT ('Invalid solution')\n   - If combined_score\
       \ <= current_score: REVERT ('Score degraded or unchanged')\n   - If eval_time\
       \ > 10 * baseline_eval_time: REVERT ('Unacceptable slowdown')\n   - Otherwise:\
-      \ KEEP ('Score improved')\n7. Write structured eval results as JSON to .factory/experiments/$EXP_ID/eval_after.json\
-      \ with these exact fields:\n   {\"combined_score\": <float>, \"validity\": <bool>,\
-      \ \"eval_time\": <float>, \"sum_radii\": <float>, \"target_ratio\": <float>}\n\
+      \ KEEP ('Score improved')\n7. Write structured eval results as JSON to .factory/experiments/$EXP_ID/eval_after.json.\
+      \ The JSON MUST include at minimum: combined_score (float), validity (bool),\
+      \ eval_time (float). Include ALL additional fields returned by evaluate_solution()\
+      \ verbatim — do NOT filter, rename, or hardcode benchmark-specific metrics.\
+      \ The schema is determined by the MCP evaluator's response, not by this template.\n\
       8. Write verdict with KEEP/REVERT and rationale to .factory/reviews/health-check.md\n\
       Include in the verdict: score_before, score_after, delta, validity, eval_time.\n\
       Read: .factory/baseline/eval.json, .factory/evolve/candidate.py, .factory/evolve/current_score.json\n\
