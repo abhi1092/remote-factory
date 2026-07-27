@@ -33,12 +33,22 @@ researcher:
       markers to understand mutable regions. Analyze the algorithm structure, data
       representations, and constants. Search the web for optimization techniques relevant
       to the problem domain (extract domain from the benchmark name in .factory/baseline/eval.json).
-      For circle packing: search for gradient descent, simulated annealing, constraint
-      satisfaction, and constructive packing strategies. Read .factory/archive/ for
-      prior knowledge on similar optimization problems. Write findings to .factory/strategy/research.md
-      covering: code structure analysis (mutable vs fixed regions), candidate optimization
-      techniques ordered by expected impact, parameter tuning opportunities, algorithmic
-      alternatives.
+      Read .factory/baseline/eval.json to identify the benchmark problem domain and
+      its target metric. Read the constraints field from .factory/baseline/eval.json
+      (if present). Constraints may include: allowed_modules, forbidden_modules, forbidden_builtins,
+      and syntax_restrictions. Validate ALL proposed optimization techniques against
+      these constraints before recommending them. Filter out any techniques that would
+      require forbidden modules, forbidden builtins, or violate syntax restrictions.
+      Only recommend techniques that use modules listed in allowed_modules (when specified).
+      Based on the discovered domain, search for relevant optimization techniques,
+      heuristics, and algorithmic strategies specific to that problem type. Read .factory/archive/
+      for prior knowledge on similar optimization problems. Write findings to .factory/strategy/research.md
+      covering: Constraint Compliance section (constraints found in eval.json, which
+      techniques are constraint-compatible, which were filtered out and why), code
+      structure analysis (mutable vs fixed regions), candidate optimization techniques
+      ordered by expected impact, parameter tuning opportunities, algorithmic alternatives.
+      If no constraints field exists in eval.json, note that no constraints were declared
+      and skip constraint filtering.
 
       Read: .factory/baseline/eval.json, .factory/baseline/initial.py
 
@@ -57,10 +67,15 @@ gate_research:
   - target: researcher
     condition: RELOOP
   slots:
-    gate_prompt_gate_research: Is the optimization research relevant to the problem
+    gate_prompt_gate_research: 'Is the optimization research relevant to the problem
       domain? Does it identify the EVOLVE-BLOCK boundaries correctly? Are the proposed
       techniques ordered by expected impact? Are there at least 3 distinct approaches
-      to try?
+      to try? CONSTRAINT COVERAGE: If .factory/baseline/eval.json contains a constraints
+      field, verify that the Researcher identified and documented those constraints.
+      Check that research.md includes a Constraint Compliance section showing which
+      techniques are constraint-compatible and which were filtered out. REDIRECT if
+      constraints exist in eval.json but the Researcher ignored them or failed to
+      document constraint compliance.'
     max_iterations_gate_research: '3'
 strategist:
   type: AgentNode
@@ -68,6 +83,7 @@ strategist:
   role: strategist
   blocking: 'true'
   reads:
+  - .factory/baseline/eval.json
   - .factory/evolve/current_best.py
   - .factory/evolve/current_score.json
   - .factory/strategy/research.md
@@ -81,14 +97,23 @@ strategist:
       loop. Read research at .factory/strategy/research.md. Read the current best
       code at .factory/evolve/current_best.py. Read experiment history at .factory/results.tsv
       and .factory/experiments/. Read the current score from .factory/evolve/current_score.json.
-      The hypothesis MUST be a specific code change within EVOLVE-BLOCK boundaries.
-      Follow FEEC priority: Fix (bugs) > Exploit (tune parameters of proven approach)
-      > Explore (new algorithm) > Combine (hybrid strategies). If the last 3 experiments
-      were all reverted, note this — the CEO will trigger fresh research. Write a
-      single hypothesis to .factory/strategy/current.md with: Category (algorithm-change|parameter-tuning|data-structure|initialization),
-      Rationale, Modification (specific code), Expected Impact, Risk.
+      Read the constraints field from .factory/baseline/eval.json (if present). Constraints
+      may include: allowed_modules, forbidden_modules, forbidden_builtins, and syntax_restrictions.
+      Before finalizing the hypothesis, verify that the proposed code modification
+      does NOT use any forbidden modules, does NOT call any forbidden builtins, and
+      respects all syntax restrictions. Only use modules listed in allowed_modules
+      (when specified). The hypothesis MUST be a specific code change within EVOLVE-BLOCK
+      boundaries. Follow FEEC priority: Fix (bugs) > Exploit (tune parameters of proven
+      approach) > Explore (new algorithm) > Combine (hybrid strategies). If the last
+      3 experiments were all reverted, note this — the CEO will trigger fresh research.
+      Write a single hypothesis to .factory/strategy/current.md with: Category (algorithm-change|parameter-tuning|data-structure|initialization),
+      Constraint Compliance (constraints found in eval.json, allowed modules used,
+      forbidden modules avoided, forbidden builtins avoided, syntax restrictions respected
+      — or note that no constraints were declared), Rationale, Modification (specific
+      code), Expected Impact, Risk.
 
-      Read: .factory/evolve/current_best.py, .factory/evolve/current_score.json, .factory/strategy/research.md
+      Read: .factory/baseline/eval.json, .factory/evolve/current_best.py, .factory/evolve/current_score.json,
+      .factory/strategy/research.md
 
       Write output to: .factory/strategy/current.md'
     timeout_strategist: '600'
@@ -98,6 +123,7 @@ gate_strategy:
   evaluator_type: agent
   evaluator_role: ceo
   reads:
+  - .factory/baseline/eval.json
   - .factory/strategy/current.md
   edges_out:
   - target: begin
@@ -105,22 +131,33 @@ gate_strategy:
   - target: strategist
     condition: RELOOP
   slots:
-    gate_prompt_gate_strategy: 'Review the code modification hypothesis. Check:
+    gate_prompt_gate_strategy: 'Review the code modification hypothesis. MANDATORY
+      checks in order:
 
-      1) Is it a specific code change, not vague prose?
+      1) CONSTRAINT VALIDATION (check FIRST): Read .factory/baseline/eval.json. If
+      a constraints field exists, verify the hypothesis does NOT violate any constraints
+      (forbidden_modules, forbidden_builtins, syntax_restrictions, allowed_modules).
+      Read current.md for the Constraint Compliance section. RELOOP to strategist
+      IMMEDIATELY if any constraint is violated.
 
-      2) Does it target only EVOLVE-BLOCK regions?
+      2) STUCK DETECTION — THIS CHECK IS MANDATORY AND NON-NEGOTIABLE: Read .factory/results.tsv.
+      Count the consecutive REVERT verdicts from the most recent experiments. If the
+      last 3 experiments were ALL REVERT, you MUST trigger RELOOP to researcher for
+      fresh perspective. Do NOT proceed to builder when stuck. Do NOT rationalize
+      skipping this check. Three consecutive reverts means the current research is
+      exhausted — fresh research is REQUIRED.
 
-      3) Is the FEEC category correct?
+      3) Is it a specific code change, not vague prose?
 
-      4) Is the expected impact plausible?
+      4) Does it target only EVOLVE-BLOCK regions?
 
-      5) Check stuck detection: if the last 3 experiments in .factory/results.tsv
-      were all REVERT, trigger RELOOP to researcher for fresh perspective instead
-      of proceeding to builder.
+      5) Is the FEEC category correct?
 
-      PROCEED if hypothesis is sound and not stuck. RELOOP to strategist if hypothesis
-      is vague or wrong category. RELOOP to researcher if stuck (3 consecutive reverts).'
+      6) Is the expected impact plausible?
+
+      PROCEED only if ALL checks pass. RELOOP to strategist if constraint violations
+      found or hypothesis is vague or wrong category. RELOOP to researcher if stuck
+      (3 consecutive reverts — MANDATORY, no exceptions).'
     max_iterations_gate_strategy: '3'
 begin:
   type: FnNode
@@ -212,8 +249,9 @@ health_checker:
   slots:
     task_prompt_health_checker: "Evaluate the candidate program via MCP and compare\
       \ scores. 1. Read the candidate code from .factory/evolve/candidate.py\n2. Call\
-      \ evaluate_solution(candidate_code) via MCP tool\n3. Parse the response: combined_score,\
-      \ validity, eval_time, sum_radii\n4. Read current best score from .factory/evolve/current_score.json\n\
+      \ evaluate_solution(candidate_code) via MCP tool\n3. Parse the evaluate_solution()\
+      \ response fields (combined_score, validity, eval_time, and any domain-specific\
+      \ metrics)\n4. Read current best score from .factory/evolve/current_score.json\n\
       5. Read baseline eval_time from .factory/baseline/eval.json\n6. Apply verdict\
       \ logic:\n   - If validity == false: REVERT ('Invalid solution')\n   - If combined_score\
       \ <= current_score: REVERT ('Score degraded or unchanged')\n   - If eval_time\

@@ -2553,14 +2553,26 @@ def evolve_workflow() -> Workflow:
             "Search the web for optimization techniques relevant to the problem domain "
             "(extract domain from the benchmark name in .factory/baseline/eval.json). "
             "Read .factory/baseline/eval.json to identify the benchmark problem domain "
-            "and its target metric. Based on the discovered domain, search for relevant "
+            "and its target metric. "
+            "Read the constraints field from .factory/baseline/eval.json (if present). "
+            "Constraints may include: allowed_modules, forbidden_modules, "
+            "forbidden_builtins, and syntax_restrictions. Validate ALL proposed "
+            "optimization techniques against these constraints before recommending them. "
+            "Filter out any techniques that would require forbidden modules, "
+            "forbidden builtins, or violate syntax restrictions. Only recommend techniques "
+            "that use modules listed in allowed_modules (when specified). "
+            "Based on the discovered domain, search for relevant "
             "optimization techniques, heuristics, and algorithmic strategies specific "
             "to that problem type. "
             "Read .factory/archive/ for prior knowledge on similar optimization problems. "
             "Write findings to .factory/strategy/research.md covering: "
+            "Constraint Compliance section (constraints found in eval.json, which "
+            "techniques are constraint-compatible, which were filtered out and why), "
             "code structure analysis (mutable vs fixed regions), "
             "candidate optimization techniques ordered by expected impact, "
-            "parameter tuning opportunities, algorithmic alternatives."
+            "parameter tuning opportunities, algorithmic alternatives. "
+            "If no constraints field exists in eval.json, note that no constraints "
+            "were declared and skip constraint filtering."
         ),
         reads={
             ".factory/baseline/initial.py",
@@ -2578,7 +2590,14 @@ def evolve_workflow() -> Workflow:
             "Is the optimization research relevant to the problem domain? "
             "Does it identify the EVOLVE-BLOCK boundaries correctly? "
             "Are the proposed techniques ordered by expected impact? "
-            "Are there at least 3 distinct approaches to try?"
+            "Are there at least 3 distinct approaches to try? "
+            "CONSTRAINT COVERAGE: If .factory/baseline/eval.json contains a "
+            "constraints field, verify that the Researcher identified and "
+            "documented those constraints. Check that research.md includes a "
+            "Constraint Compliance section showing which techniques are "
+            "constraint-compatible and which were filtered out. "
+            "REDIRECT if constraints exist in eval.json but the Researcher "
+            "ignored them or failed to document constraint compliance."
         ),
         reads={".factory/strategy/research.md"},
     )
@@ -2595,6 +2614,13 @@ def evolve_workflow() -> Workflow:
             "Read the current best code at .factory/evolve/current_best.py. "
             "Read experiment history at .factory/results.tsv and .factory/experiments/. "
             "Read the current score from .factory/evolve/current_score.json. "
+            "Read the constraints field from .factory/baseline/eval.json (if present). "
+            "Constraints may include: allowed_modules, forbidden_modules, "
+            "forbidden_builtins, and syntax_restrictions. Before finalizing the "
+            "hypothesis, verify that the proposed code modification does NOT use "
+            "any forbidden modules, does NOT call any forbidden builtins, and "
+            "respects all syntax restrictions. Only use modules listed in "
+            "allowed_modules (when specified). "
             "The hypothesis MUST be a specific code change within EVOLVE-BLOCK boundaries. "
             "Follow FEEC priority: Fix (bugs) > Exploit (tune parameters of proven approach) "
             "> Explore (new algorithm) > Combine (hybrid strategies). "
@@ -2602,12 +2628,16 @@ def evolve_workflow() -> Workflow:
             "trigger fresh research. "
             "Write a single hypothesis to .factory/strategy/current.md with: "
             "Category (algorithm-change|parameter-tuning|data-structure|initialization), "
+            "Constraint Compliance (constraints found in eval.json, allowed modules used, "
+            "forbidden modules avoided, forbidden builtins avoided, syntax restrictions "
+            "respected — or note that no constraints were declared), "
             "Rationale, Modification (specific code), Expected Impact, Risk."
         ),
         reads={
             ".factory/strategy/research.md",
             ".factory/evolve/current_best.py",
             ".factory/evolve/current_score.json",
+            ".factory/baseline/eval.json",
         },
         writes={".factory/strategy/current.md"},
     )
@@ -2618,19 +2648,32 @@ def evolve_workflow() -> Workflow:
         evaluator_type="agent",
         evaluator_role=AgentRole.CEO,
         gate_prompt=(
-            "Review the code modification hypothesis. Check:\n"
-            "1) Is it a specific code change, not vague prose?\n"
-            "2) Does it target only EVOLVE-BLOCK regions?\n"
-            "3) Is the FEEC category correct?\n"
-            "4) Is the expected impact plausible?\n"
-            "5) Check stuck detection: if the last 3 experiments in .factory/results.tsv "
-            "were all REVERT, trigger RELOOP to researcher for fresh perspective "
-            "instead of proceeding to builder.\n"
-            "PROCEED if hypothesis is sound and not stuck. "
-            "RELOOP to strategist if hypothesis is vague or wrong category. "
-            "RELOOP to researcher if stuck (3 consecutive reverts)."
+            "Review the code modification hypothesis. MANDATORY checks in order:\n"
+            "1) CONSTRAINT VALIDATION (check FIRST): Read .factory/baseline/eval.json. "
+            "If a constraints field exists, verify the hypothesis does NOT violate any "
+            "constraints (forbidden_modules, forbidden_builtins, syntax_restrictions, "
+            "allowed_modules). Read current.md for the Constraint Compliance section. "
+            "RELOOP to strategist IMMEDIATELY if any constraint is violated.\n"
+            "2) STUCK DETECTION — THIS CHECK IS MANDATORY AND NON-NEGOTIABLE: "
+            "Read .factory/results.tsv. Count the consecutive REVERT verdicts from the "
+            "most recent experiments. If the last 3 experiments were ALL REVERT, you MUST "
+            "trigger RELOOP to researcher for fresh perspective. Do NOT proceed to builder "
+            "when stuck. Do NOT rationalize skipping this check. Three consecutive reverts "
+            "means the current research is exhausted — fresh research is REQUIRED.\n"
+            "3) Is it a specific code change, not vague prose?\n"
+            "4) Does it target only EVOLVE-BLOCK regions?\n"
+            "5) Is the FEEC category correct?\n"
+            "6) Is the expected impact plausible?\n"
+            "PROCEED only if ALL checks pass. "
+            "RELOOP to strategist if constraint violations found or hypothesis is "
+            "vague or wrong category. "
+            "RELOOP to researcher if stuck (3 consecutive reverts — MANDATORY, "
+            "no exceptions)."
         ),
-        reads={".factory/strategy/current.md"},
+        reads={
+            ".factory/strategy/current.md",
+            ".factory/baseline/eval.json",
+        },
     )
 
     # Begin experiment
