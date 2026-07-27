@@ -20,6 +20,8 @@ Initialize the baseline directory. The CEO must then:
 4. Write the eval result to .factory/baseline/eval.json
 5. Write the current best code to .factory/evolve/current_best.py
 6. Write the current score to .factory/evolve/current_score.json
+7. Copy the eval result to .factory/experiments/000/eval_before.json (same content as baseline/eval.json — enables CycleAnalyzer artifact discovery)
+8. Emit eval.completed event to .factory/events.jsonl with the baseline composite score
 
 ```bash
 python3 -c "import json; from pathlib import Path; p = Path('$PROJECT_PATH/.factory/baseline'); p.mkdir(parents=True, exist_ok=True); Path('$PROJECT_PATH/.factory/evolve').mkdir(parents=True, exist_ok=True); print('Baseline directory ready. CEO must call get_benchmark_info() and evaluate_solution() via MCP, then write initial.py and eval.json to .factory/baseline/.')"
@@ -81,6 +83,14 @@ Open a new experiment for the current hypothesis. The CEO must substitute $HYPOT
 factory begin $PROJECT_PATH --hypothesis "$HYPOTHESIS"
 ```
 
+## Step: Pre Eval
+
+Copy current score snapshot to experiment's eval_before.json. The CEO must substitute $EXP_ID with the experiment ID from begin. This enables CycleAnalyzer to compute per-experiment score deltas.
+
+```bash
+python3 -c "import shutil; from pathlib import Path; src = Path('$PROJECT_PATH/.factory/evolve/current_score.json'); exp_dir = Path('$PROJECT_PATH/.factory/experiments/$EXP_ID'); exp_dir.mkdir(parents=True, exist_ok=True); shutil.copy2(str(src), str(exp_dir / 'eval_before.json')) if src.exists() else None; print('eval_before.json written to', exp_dir)"
+```
+
 ## Phase 3: Builder
 
 ```bash
@@ -126,11 +136,20 @@ factory agent health_checker --task "Evaluate the candidate program via MCP and 
    - If combined_score <= current_score: REVERT ('Score degraded or unchanged')
    - If eval_time > 10 * baseline_eval_time: REVERT ('Unacceptable slowdown')
    - Otherwise: KEEP ('Score improved')
-7. Write eval results to .factory/experiments/$EXP_ID/eval_after.json
+7. Write structured eval results as JSON to .factory/experiments/$EXP_ID/eval_after.json with these exact fields:
+   {"combined_score": <float>, "validity": <bool>, "eval_time": <float>, "sum_radii": <float>, "target_ratio": <float>}
 8. Write verdict with KEEP/REVERT and rationale to .factory/reviews/health-check.md
 Include in the verdict: score_before, score_after, delta, validity, eval_time.
 Read: .factory/baseline/eval.json, .factory/evolve/candidate.py, .factory/evolve/current_score.json
-Write output to: .factory/reviews/health-check.md" --project "$PROJECT_PATH" --timeout 600
+Write output to: .factory/experiments/$EXP_ID/eval_after.json, .factory/reviews/health-check.md" --project "$PROJECT_PATH" --timeout 600
+```
+
+## Step: Post Eval
+
+Emit eval.completed event to events.jsonl after Health Checker finishes. The CEO must substitute $EXP_ID. Reads the composite score from eval_after.json (primary) or health-check.md (fallback), then appends a structured event for CycleAnalyzer._extract_scores().
+
+```bash
+python3 -c "import json; from pathlib import Path; from datetime import datetime, timezone; score = None; ea = Path('$PROJECT_PATH/.factory/experiments/$EXP_ID/eval_after.json'); if ea.exists():     d = json.loads(ea.read_text());     score = d.get('combined_score', d.get('total')); if score is None:     hc = Path('$PROJECT_PATH/.factory/reviews/health-check.md');     if hc.exists():         for line in hc.read_text().splitlines():             if 'score_after' in line.lower() or 'combined_score' in line.lower():                 for part in line.split(':'):                     part = part.strip().rstrip(',%); ');                     try: score = float(part); break;                     except ValueError: pass;             if score is not None: break; event = {    'type': 'eval.completed',     'data': {'composite': score if score is not None else 0.0, 'exp_id': '$EXP_ID'},     'timestamp': datetime.now(timezone.utc).isoformat(), }; events_path = Path('$PROJECT_PATH/.factory/events.jsonl'); with open(events_path, 'a') as f:     f.write(json.dumps(event) + chr(10)); print('eval.completed event emitted, composite=', score)"
 ```
 
 ### CEO Review — Eval

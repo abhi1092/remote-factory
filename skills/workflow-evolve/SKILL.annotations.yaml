@@ -11,6 +11,7 @@ baseline:
   - .factory/baseline/initial.py
   - .factory/evolve/current_best.py
   - .factory/evolve/current_score.json
+  - .factory/experiments/000/eval_before.json
   edges_out:
   - target: researcher
     condition: null
@@ -33,12 +34,13 @@ researcher:
       markers to understand mutable regions. Analyze the algorithm structure, data
       representations, and constants. Search the web for optimization techniques relevant
       to the problem domain (extract domain from the benchmark name in .factory/baseline/eval.json).
-      For circle packing: search for gradient descent, simulated annealing, constraint
-      satisfaction, and constructive packing strategies. Read .factory/archive/ for
-      prior knowledge on similar optimization problems. Write findings to .factory/strategy/research.md
-      covering: code structure analysis (mutable vs fixed regions), candidate optimization
-      techniques ordered by expected impact, parameter tuning opportunities, algorithmic
-      alternatives.
+      Read .factory/baseline/eval.json to identify the benchmark problem domain and
+      its target metric. Based on the discovered domain, search for relevant optimization
+      techniques, heuristics, and algorithmic strategies specific to that problem
+      type. Read .factory/archive/ for prior knowledge on similar optimization problems.
+      Write findings to .factory/strategy/research.md covering: code structure analysis
+      (mutable vs fixed regions), candidate optimization techniques ordered by expected
+      impact, parameter tuning opportunities, algorithmic alternatives.
 
       Read: .factory/baseline/eval.json, .factory/baseline/initial.py
 
@@ -130,10 +132,30 @@ begin:
   writes:
   - .factory/experiments/current_id
   edges_out:
-  - target: builder
+  - target: pre_eval
     condition: null
   slots:
     finalize_command_begin: factory begin $PROJECT_PATH --hypothesis "$HYPOTHESIS"
+pre_eval:
+  type: FnNode
+  id: pre_eval
+  command: python3 -c "import shutil; from pathlib import Path; src = Path('{project_path}/.factory/evolve/current_score.json');
+    exp_dir = Path('{project_path}/.factory/experiments/$EXP_ID'); exp_dir.mkdir(parents=True,
+    exist_ok=True); shutil.copy2(str(src), str(exp_dir / 'eval_before.json')) if src.exists()
+    else None; print('eval_before.json written to', exp_dir)"
+  reads:
+  - .factory/evolve/current_score.json
+  writes:
+  - .factory/experiments/$EXP_ID/eval_before.json
+  edges_out:
+  - target: builder
+    condition: null
+  slots:
+    finalize_command_pre_eval: python3 -c "import shutil; from pathlib import Path;
+      src = Path('$PROJECT_PATH/.factory/evolve/current_score.json'); exp_dir = Path('$PROJECT_PATH/.factory/experiments/$EXP_ID');
+      exp_dir.mkdir(parents=True, exist_ok=True); shutil.copy2(str(src), str(exp_dir
+      / 'eval_before.json')) if src.exists() else None; print('eval_before.json written
+      to', exp_dir)"
 builder:
   type: AgentNode
   id: builder
@@ -205,25 +227,68 @@ health_checker:
   - .factory/evolve/candidate.py
   - .factory/evolve/current_score.json
   writes:
+  - .factory/experiments/$EXP_ID/eval_after.json
   - .factory/reviews/health-check.md
   edges_out:
-  - target: gate_eval
+  - target: post_eval
     condition: null
   slots:
     task_prompt_health_checker: "Evaluate the candidate program via MCP and compare\
       \ scores. 1. Read the candidate code from .factory/evolve/candidate.py\n2. Call\
-      \ evaluate_solution(candidate_code) via MCP tool\n3. Parse the response: combined_score,\
-      \ validity, eval_time, sum_radii\n4. Read current best score from .factory/evolve/current_score.json\n\
+      \ evaluate_solution(candidate_code) via MCP tool\n3. Parse the evaluate_solution()\
+      \ response fields (combined_score, validity, eval_time, and any domain-specific\
+      \ metrics)\n4. Read current best score from .factory/evolve/current_score.json\n\
       5. Read baseline eval_time from .factory/baseline/eval.json\n6. Apply verdict\
       \ logic:\n   - If validity == false: REVERT ('Invalid solution')\n   - If combined_score\
       \ <= current_score: REVERT ('Score degraded or unchanged')\n   - If eval_time\
       \ > 10 * baseline_eval_time: REVERT ('Unacceptable slowdown')\n   - Otherwise:\
-      \ KEEP ('Score improved')\n7. Write eval results to .factory/experiments/$EXP_ID/eval_after.json\n\
+      \ KEEP ('Score improved')\n7. Write structured eval results as JSON to .factory/experiments/$EXP_ID/eval_after.json\
+      \ with these exact fields:\n   {\"combined_score\": <float>, \"validity\": <bool>,\
+      \ \"eval_time\": <float>, \"sum_radii\": <float>, \"target_ratio\": <float>}\n\
       8. Write verdict with KEEP/REVERT and rationale to .factory/reviews/health-check.md\n\
       Include in the verdict: score_before, score_after, delta, validity, eval_time.\n\
       Read: .factory/baseline/eval.json, .factory/evolve/candidate.py, .factory/evolve/current_score.json\n\
-      Write output to: .factory/reviews/health-check.md"
+      Write output to: .factory/experiments/$EXP_ID/eval_after.json, .factory/reviews/health-check.md"
     timeout_health_checker: '600'
+post_eval:
+  type: FnNode
+  id: post_eval
+  command: 'python3 -c "import json; from pathlib import Path; from datetime import
+    datetime, timezone; score = None; ea = Path(''{project_path}/.factory/experiments/$EXP_ID/eval_after.json'');
+    if ea.exists():     d = json.loads(ea.read_text());     score = d.get(''combined_score'',
+    d.get(''total'')); if score is None:     hc = Path(''{project_path}/.factory/reviews/health-check.md'');     if
+    hc.exists():         for line in hc.read_text().splitlines():             if ''score_after''
+    in line.lower() or ''combined_score'' in line.lower():                 for part
+    in line.split('':''):                     part = part.strip().rstrip('',%); '');                     try:
+    score = float(part); break;                     except ValueError: pass;             if
+    score is not None: break; event = {    ''type'': ''eval.completed'',     ''data'':
+    {''composite'': score if score is not None else 0.0, ''exp_id'': ''$EXP_ID''},     ''timestamp'':
+    datetime.now(timezone.utc).isoformat(), }; events_path = Path(''{project_path}/.factory/events.jsonl'');
+    with open(events_path, ''a'') as f:     f.write(json.dumps(event) + chr(10));
+    print(''eval.completed event emitted, composite='', score)"'
+  reads:
+  - .factory/experiments/$EXP_ID/eval_after.json
+  - .factory/reviews/health-check.md
+  writes:
+  - .factory/events.jsonl
+  edges_out:
+  - target: gate_eval
+    condition: null
+  slots:
+    finalize_command_post_eval: 'python3 -c "import json; from pathlib import Path;
+      from datetime import datetime, timezone; score = None; ea = Path(''$PROJECT_PATH/.factory/experiments/$EXP_ID/eval_after.json'');
+      if ea.exists():     d = json.loads(ea.read_text());     score = d.get(''combined_score'',
+      d.get(''total'')); if score is None:     hc = Path(''$PROJECT_PATH/.factory/reviews/health-check.md'');     if
+      hc.exists():         for line in hc.read_text().splitlines():             if
+      ''score_after'' in line.lower() or ''combined_score'' in line.lower():                 for
+      part in line.split('':''):                     part = part.strip().rstrip('',%);
+      '');                     try: score = float(part); break;                     except
+      ValueError: pass;             if score is not None: break; event = {    ''type'':
+      ''eval.completed'',     ''data'': {''composite'': score if score is not None
+      else 0.0, ''exp_id'': ''$EXP_ID''},     ''timestamp'': datetime.now(timezone.utc).isoformat(),
+      }; events_path = Path(''$PROJECT_PATH/.factory/events.jsonl''); with open(events_path,
+      ''a'') as f:     f.write(json.dumps(event) + chr(10)); print(''eval.completed
+      event emitted, composite='', score)"'
 gate_eval:
   type: GateNode
   id: gate_eval
