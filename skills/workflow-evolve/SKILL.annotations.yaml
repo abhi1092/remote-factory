@@ -33,12 +33,13 @@ researcher:
       markers to understand mutable regions. Analyze the algorithm structure, data
       representations, and constants. Search the web for optimization techniques relevant
       to the problem domain (extract domain from the benchmark name in .factory/baseline/eval.json).
-      For circle packing: search for gradient descent, simulated annealing, constraint
-      satisfaction, and constructive packing strategies. Read .factory/archive/ for
-      prior knowledge on similar optimization problems. Write findings to .factory/strategy/research.md
-      covering: code structure analysis (mutable vs fixed regions), candidate optimization
-      techniques ordered by expected impact, parameter tuning opportunities, algorithmic
-      alternatives.
+      Read .factory/baseline/eval.json to identify the benchmark problem domain and
+      its target metric. Based on the discovered domain, search for relevant optimization
+      techniques, heuristics, and algorithmic strategies specific to that problem
+      type. Read .factory/archive/ for prior knowledge on similar optimization problems.
+      Write findings to .factory/strategy/research.md covering: code structure analysis
+      (mutable vs fixed regions), candidate optimization techniques ordered by expected
+      impact, parameter tuning opportunities, algorithmic alternatives.
 
       Read: .factory/baseline/eval.json, .factory/baseline/initial.py
 
@@ -212,8 +213,9 @@ health_checker:
   slots:
     task_prompt_health_checker: "Evaluate the candidate program via MCP and compare\
       \ scores. 1. Read the candidate code from .factory/evolve/candidate.py\n2. Call\
-      \ evaluate_solution(candidate_code) via MCP tool\n3. Parse the response: combined_score,\
-      \ validity, eval_time, sum_radii\n4. Read current best score from .factory/evolve/current_score.json\n\
+      \ evaluate_solution(candidate_code) via MCP tool\n3. Parse the evaluate_solution()\
+      \ response fields (combined_score, validity, eval_time, and any domain-specific\
+      \ metrics)\n4. Read current best score from .factory/evolve/current_score.json\n\
       5. Read baseline eval_time from .factory/baseline/eval.json\n6. Apply verdict\
       \ logic:\n   - If validity == false: REVERT ('Invalid solution')\n   - If combined_score\
       \ <= current_score: REVERT ('Score degraded or unchanged')\n   - If eval_time\

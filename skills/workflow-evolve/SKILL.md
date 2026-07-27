@@ -14,7 +14,7 @@ The user wants: **$ARGUMENTS**
 ## Step: Baseline
 
 Initialize the baseline directory. The CEO must then:
-1. Call get_benchmark_info() via MCP to retrieve the initial program
+1. Call get_benchmark_info(benchmark_name) via MCP — read the benchmark name from the ## Benchmark Target section in the CEO task
 2. Write the initial program to .factory/baseline/initial.py
 3. Call evaluate_solution(initial_program) via MCP to get baseline score
 4. Write the eval result to .factory/baseline/eval.json
