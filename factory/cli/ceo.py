@@ -548,7 +548,7 @@ def cmd_ceo(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
-    if focus and mode not in ("improve", "research", "create") and not design_existing:
+    if focus and mode not in ("improve", "research", "create", "evolve") and not design_existing:
         print(
             f"Error: --focus (targeted mode) only works in improve, research, or create mode, got '{mode}'. "
             "The project must already be built before targeting specific items.",
@@ -1811,7 +1811,14 @@ def _build_ceo_task(
             f"execute exactly what it describes. Do not infer or improvise beyond what the prompt asks for."
         )
 
-    if focus and not create_description:
+    if focus and mode == "evolve":
+        task += (
+            f"\n\n## Benchmark Target\n\n"
+            f"Benchmark: {focus}\n\n"
+            f"Pass this benchmark name to get_benchmark_info() in the Baseline step "
+            f"to retrieve the initial program and evaluation criteria.\n"
+        )
+    elif focus and not create_description:
         task += f"\n\n## Focus Directive (Targeted Mode)\n\nTarget: {focus}\n\n"
         if issue_number:
             issue_label = f"#{issue_number}"
@@ -2235,7 +2242,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
-    if focus and mode not in ("improve", "research"):
+    if focus and mode not in ("improve", "research", "evolve"):
         print(
             f"Error: --focus (targeted mode) only works in improve or research mode, got '{mode}'. "
             "The project must already be built before targeting specific items.",

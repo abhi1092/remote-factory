@@ -2373,7 +2373,7 @@ def evolve_workflow() -> Workflow:
         ),
         notes=(
             "Initialize the baseline directory. The CEO must then:\n"
-            "1. Call get_benchmark_info() via MCP to retrieve the initial program\n"
+            "1. Call get_benchmark_info(benchmark_name) via MCP — read the benchmark name from the ## Benchmark Target section in the CEO task\n"
             "2. Write the initial program to .factory/baseline/initial.py\n"
             "3. Call evaluate_solution(initial_program) via MCP to get baseline score\n"
             "4. Write the eval result to .factory/baseline/eval.json\n"
