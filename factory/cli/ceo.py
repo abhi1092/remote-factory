@@ -1969,16 +1969,22 @@ def _build_ceo_task(
     elif mode == "optimize":
         optimize_target = focus
         optimize_project = None
+        optimize_benchmark = None
         if focus and ":" in focus:
-            parts = focus.split(":", 1)
+            parts = focus.split(":")
             optimize_target = parts[0].strip()
-            optimize_project = parts[1].strip()
+            if len(parts) >= 2:
+                optimize_project = parts[1].strip()
+            if len(parts) >= 3:
+                optimize_benchmark = parts[2].strip()
         task += (
             f"\n\n## Optimize Mode\n\n"
             f"**Target mode:** {optimize_target}\n"
         )
         if optimize_project:
             task += f"**Target project:** {optimize_project}\n"
+        if optimize_benchmark:
+            task += f"**Target benchmark:** {optimize_benchmark}\n"
         task += (
             f"\nYou are analyzing the `{optimize_target}` workflow mode to identify performance "
             f"weaknesses and generate targeted improvements.\n\n"
@@ -1989,6 +1995,12 @@ def _build_ceo_task(
                 f"```\nfactory ceo {optimize_project} --mode {optimize_target} --no-worktree\n```\n"
                 f"The target project has its own `.mcp.json` and evaluator configuration. "
                 f"After each inner loop cycle, collect results from `{optimize_project}/.factory/`.\n\n"
+            )
+        if optimize_benchmark:
+            task += (
+                f"**Benchmark focus:** Optimize specifically for the `{optimize_benchmark}` benchmark. "
+                f"The evaluator in the target project should be configured to run this benchmark. "
+                f"Research and hypotheses should target this benchmark's characteristics.\n\n"
             )
         task += (
             f"**Workflow:**\n"
