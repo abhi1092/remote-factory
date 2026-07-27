@@ -1891,12 +1891,14 @@ def optimize_workflow() -> Workflow:
     nodes["run_target"] = FnNode(
         id="run_target",
         command=(
-            'factory ceo {project_path} --mode $OPTIMIZE_TARGET --no-worktree'
+            'factory ceo $OPTIMIZE_PROJECT --mode $OPTIMIZE_TARGET --no-worktree'
         ),
         notes=(
             "Run one cycle of the target mode to produce execution artifacts. "
             "The CEO must substitute $OPTIMIZE_TARGET with the target mode name "
-            "from the --focus argument (e.g., 'improve', 'research', 'build'). "
+            "and $OPTIMIZE_PROJECT with the target project path. "
+            "If the CEO task has a '**Target project:**' field, use that path. "
+            "Otherwise use {project_path}. "
             "--no-worktree prevents nested worktree creation. "
             "Produces: events.jsonl (appends), reviews/*.md, experiments/NNN/, results.tsv."
         ),
@@ -1917,7 +1919,7 @@ def optimize_workflow() -> Workflow:
             "from dataclasses import asdict; "
             "from factory.inner_loop import InnerLoop; "
             "loop = InnerLoop("
-            "    project_dir=Path('{project_path}'), "
+            "    project_dir=Path('$OPTIMIZE_PROJECT'), "
             "    mode='$OPTIMIZE_TARGET', "
             "    evaluator=None, "
             "); "
@@ -1932,7 +1934,9 @@ def optimize_workflow() -> Workflow:
         notes=(
             "Collect execution artifacts into structured CycleRecord JSON. "
             "Uses InnerLoop.collect() which internally calls CycleAnalyzer.latest(). "
-            "The CEO must substitute $OPTIMIZE_TARGET with the target mode name. "
+            "The CEO must substitute $OPTIMIZE_TARGET with the target mode name "
+            "and $OPTIMIZE_PROJECT with the target project path. "
+            "Results are written to the factory project's .factory/, not the target project. "
             "dataclasses.asdict() handles all nested dataclasses (AgentStep, "
             "ExperimentRecord, NodeTrace). default=str handles set serialization."
         ),

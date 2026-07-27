@@ -407,7 +407,8 @@ def cmd_ceo(args: argparse.Namespace) -> int:
         if not focus:
             print(
                 "Error: --mode optimize requires --focus <target_mode_name>. "
-                "Example: factory ceo /path --mode optimize --focus improve",
+                "Example: factory ceo /path --mode optimize --focus improve\n"
+                "  With target project: --focus evolve:/path/to/target/project",
                 file=sys.stderr,
             )
             return 1
@@ -1966,24 +1967,44 @@ def _build_ceo_task(
             "The full step-by-step playbook is in your system prompt above."
         )
     elif mode == "optimize":
+        optimize_target = focus
+        optimize_project = None
+        if focus and ":" in focus:
+            parts = focus.split(":", 1)
+            optimize_target = parts[0].strip()
+            optimize_project = parts[1].strip()
         task += (
             f"\n\n## Optimize Mode\n\n"
-            f"**Target mode:** {focus}\n\n"
-            f"You are analyzing the `{focus}` workflow mode to identify performance "
+            f"**Target mode:** {optimize_target}\n"
+        )
+        if optimize_project:
+            task += f"**Target project:** {optimize_project}\n"
+        task += (
+            f"\nYou are analyzing the `{optimize_target}` workflow mode to identify performance "
             f"weaknesses and generate targeted improvements.\n\n"
+        )
+        if optimize_project:
+            task += (
+                f"**Inner loop execution:** When running the target mode, use the target project:\n"
+                f"```\nfactory ceo {optimize_project} --mode {optimize_target} --no-worktree\n```\n"
+                f"The target project has its own `.mcp.json` and evaluator configuration. "
+                f"After each inner loop cycle, collect results from `{optimize_project}/.factory/`.\n\n"
+            )
+        task += (
             f"**Workflow:**\n"
             f"1. Study the project to gather baseline context\n"
-            f"2. Spawn the Researcher to analyze `{focus}` mode performance:\n"
+            f"2. Spawn the Researcher to analyze `{optimize_target}` mode performance:\n"
             f"   - Keep/revert rates from .factory/results.tsv\n"
             f"   - Agent redirect/timeout patterns from .factory/events.jsonl\n"
             f"   - CEO verdict patterns from .factory/reviews/\n"
-            f"   - Workflow definition via `factory workflow show {focus}`\n"
-            f"   - SKILL.md at skills/workflow-{focus}/SKILL.md\n"
+            f"   - Workflow definition via `factory workflow show {optimize_target}`\n"
+            f"   - SKILL.md at skills/workflow-{optimize_target}/SKILL.md\n"
             f"3. Review the analysis (CEO gate)\n"
             f"4. Spawn the Strategist to generate a change specification\n"
             f"5. Present changes to user for approval\n"
-            f"6. Delegate to create mode: "
-            f"`factory ceo {{project_path}} --mode create --focus \"{focus}: <changes>\"`\n\n"
+            f"6. Run the inner loop → collect results → reflect → repeat until convergence\n"
+            f"7. Delegate to create mode: "
+            f"`factory ceo {{project_path}} --mode create --focus \"{optimize_target}: <changes>\"`\n\n"
             f"**Constraints:**\n"
             f"- Max 1 optimization per invocation\n"
             f"- Do NOT propose removing safety gates or QA verification steps\n"
