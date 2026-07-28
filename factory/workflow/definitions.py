@@ -2677,25 +2677,30 @@ def evolve_workflow() -> Workflow:
             "p.mkdir(parents=True, exist_ok=True); "
             "Path('{project_path}/.factory/evolve').mkdir(parents=True, exist_ok=True); "
             "print('Baseline directory ready. "
-            "CEO must call get_benchmark_info() and evaluate_solution() via MCP, "
+            "CEO must call get_benchmark_info() via MCP, extract domain context to benchmark_info.json, "
             "then write initial.py and eval.json to .factory/baseline/.')"
             '"'
         ),
         notes=(
             "Initialize the baseline directory. The CEO must then:\n"
             "1. Call get_benchmark_info(benchmark_name) via MCP — read the benchmark name from the ## Benchmark Target section in the CEO task\n"
-            "2. Write the initial program to .factory/baseline/initial.py\n"
-            "3. Call evaluate_solution(initial_program) via MCP to get baseline score\n"
-            "4. Write the eval result to .factory/baseline/eval.json\n"
-            "5. Write the current best code to .factory/evolve/current_best.py\n"
-            "6. Write the current score to .factory/evolve/current_score.json\n"
-            "7. Copy the eval result to .factory/experiments/000/eval_before.json "
+            "2. Extract structured domain context from the get_benchmark_info() response and write to "
+            ".factory/baseline/benchmark_info.json as JSON. Include all fields returned by the MCP tool "
+            "(benchmark_name, description, task_type, input_format, output_format, constraints, "
+            "optimization_target, evaluation_criteria, example_inputs — whatever the tool provides).\n"
+            "3. Write the initial program to .factory/baseline/initial.py\n"
+            "4. Call evaluate_solution(initial_program) via MCP to get baseline score\n"
+            "5. Write the eval result to .factory/baseline/eval.json\n"
+            "6. Write the current best code to .factory/evolve/current_best.py\n"
+            "7. Write the current score to .factory/evolve/current_score.json\n"
+            "8. Copy the eval result to .factory/experiments/000/eval_before.json "
             "(same content as baseline/eval.json — enables CycleAnalyzer artifact discovery)\n"
-            "8. Emit eval.completed event to .factory/events.jsonl with the baseline composite score"
+            "9. Emit eval.completed event to .factory/events.jsonl with the baseline composite score"
         ),
         writes={
             ".factory/baseline/initial.py",
             ".factory/baseline/eval.json",
+            ".factory/baseline/benchmark_info.json",
             ".factory/evolve/current_best.py",
             ".factory/evolve/current_score.json",
             ".factory/experiments/000/eval_before.json",
@@ -2711,21 +2716,21 @@ def evolve_workflow() -> Workflow:
             "Read the initial program at .factory/baseline/initial.py. "
             "Identify EVOLVE-BLOCK-START/END markers to understand mutable regions. "
             "Analyze the algorithm structure, data representations, and constants. "
-            "Search the web for optimization techniques relevant to the problem domain "
-            "(extract domain from the benchmark name in .factory/baseline/eval.json). "
-            "Read .factory/baseline/eval.json to identify the benchmark problem domain "
-            "and its target metric. Based on the discovered domain, search for relevant "
-            "optimization techniques, heuristics, and algorithmic strategies specific "
-            "to that problem type. "
+            "Read .factory/baseline/benchmark_info.json for structured domain context: "
+            "problem description, evaluation criteria, constraints, and optimization target. "
+            "Use this context to understand the problem class, optimization objectives, and solution space. "
+            "Search the web for optimization techniques, heuristics, and algorithmic strategies "
+            "specific to this problem domain. "
             "Read .factory/archive/ for prior knowledge on similar optimization problems. "
             "Write findings to .factory/strategy/research.md covering: "
             "code structure analysis (mutable vs fixed regions), "
-            "candidate optimization techniques ordered by expected impact, "
+            "candidate optimization techniques ordered by expected impact (grounded in evaluation criteria), "
             "parameter tuning opportunities, algorithmic alternatives."
         ),
         reads={
             ".factory/baseline/initial.py",
             ".factory/baseline/eval.json",
+            ".factory/baseline/benchmark_info.json",
         },
         writes={".factory/strategy/research.md"},
     )
@@ -2753,20 +2758,25 @@ def evolve_workflow() -> Workflow:
         prompt_template=(
             "Generate ONE code modification hypothesis for the evolve loop. "
             "Read research at .factory/strategy/research.md. "
+            "Read domain context at .factory/baseline/benchmark_info.json — "
+            "use evaluation_criteria to align hypotheses with what the benchmark rewards, "
+            "and constraints to ensure modifications stay within limits. "
             "Read the current best code at .factory/evolve/current_best.py. "
             "Read experiment history at .factory/results.tsv and .factory/experiments/. "
             "Read the current score from .factory/evolve/current_score.json. "
             "The hypothesis MUST be a specific code change within EVOLVE-BLOCK boundaries. "
             "Follow FEEC priority: Fix (bugs) > Exploit (tune parameters of proven approach) "
             "> Explore (new algorithm) > Combine (hybrid strategies). "
-            "If the last 3 experiments were all reverted, note this — the CEO will "
-            "trigger fresh research. "
+            "If the last 2 experiments were both reverted AND from the same FEEC family "
+            "(same Category field: algorithm-change, parameter-tuning, data-structure, or initialization), "
+            "note this — the CEO will trigger fresh research. "
             "Write a single hypothesis to .factory/strategy/current.md with: "
             "Category (algorithm-change|parameter-tuning|data-structure|initialization), "
             "Rationale, Modification (specific code), Expected Impact, Risk."
         ),
         reads={
             ".factory/strategy/research.md",
+            ".factory/baseline/benchmark_info.json",
             ".factory/evolve/current_best.py",
             ".factory/evolve/current_score.json",
         },
@@ -2784,12 +2794,13 @@ def evolve_workflow() -> Workflow:
             "2) Does it target only EVOLVE-BLOCK regions?\n"
             "3) Is the FEEC category correct?\n"
             "4) Is the expected impact plausible?\n"
-            "5) Check stuck detection: if the last 3 experiments in .factory/results.tsv "
-            "were all REVERT, trigger RELOOP to researcher for fresh perspective "
-            "instead of proceeding to builder.\n"
+            "5) Check stuck detection: Read .factory/results.tsv and extract the Category field "
+            "from the last 2 experiment hypotheses. If BOTH of the last 2 experiments were REVERT "
+            "AND had the same Category (same FEEC family), trigger MANDATORY RELOOP to researcher "
+            "for fresh perspective instead of proceeding to builder.\n"
             "PROCEED if hypothesis is sound and not stuck. "
             "RELOOP to strategist if hypothesis is vague or wrong category. "
-            "RELOOP to researcher if stuck (3 consecutive reverts)."
+            "RELOOP to researcher if stuck (2 consecutive same-family reverts)."
         ),
         reads={".factory/strategy/current.md"},
     )
@@ -2891,9 +2902,11 @@ def evolve_workflow() -> Workflow:
             "   - If eval_time > 10 * baseline_eval_time: REVERT ('Unacceptable slowdown')\n"
             "   - Otherwise: KEEP ('Score improved')\n"
             "7. Write structured eval results as JSON to "
-            ".factory/experiments/$EXP_ID/eval_after.json with these exact fields:\n"
-            '   {"combined_score": <float>, "validity": <bool>, '
-            '"eval_time": <float>, "sum_radii": <float>, "target_ratio": <float>}\n'
+            ".factory/experiments/$EXP_ID/eval_after.json. "
+            "The JSON MUST include at minimum: combined_score (float), validity (bool), eval_time (float). "
+            "Include ALL additional fields returned by evaluate_solution() verbatim — "
+            "do NOT filter, rename, or hardcode benchmark-specific metrics. "
+            "The schema is determined by the MCP evaluator's response, not by this template.\n"
             "8. Write verdict with KEEP/REVERT and rationale to "
             ".factory/reviews/health-check.md\n"
             "Include in the verdict: score_before, score_after, delta, validity, eval_time."
