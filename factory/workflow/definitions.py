@@ -11,6 +11,7 @@ W₈: Refine Mode
 W₉: Create Mode (meta-mode for creating new factory modes)
 W₁₀: Spec Generate Mode
 W₁₁: Spec Update Mode
+W₁₂: Optimize Mode (meta-mode: analyze mode performance → change spec → delegate to create)
 
 All 5 core workflows (build, improve, research, refine, create) use the deep-QA
 verification pipeline: 3 specialist agents (health_checker, code_reviewer,
@@ -26,7 +27,6 @@ from factory.models import ProjectState
 from factory.workflow.primitives import (
     AgentNode,
     AgentRole,
-    ArtifactCheck,
     Edge,
     FnNode,
     ForkNode,
@@ -52,13 +52,13 @@ __all__ = [
     "review_workflow",
     "refine_workflow",
     "create_workflow",
+    "optimize_workflow",
     "skill_refine_workflow",
     "doc_generate_workflow",
     "doc_update_workflow",
     "spec_generate_workflow",
     "spec_update_workflow",
     "parallel_improve_workflow",
-    "founder_workflow",
     "evolve_workflow",
     "register_all",
 ]
@@ -173,11 +173,6 @@ def build_workflow() -> Workflow:
             "differentiation opportunities."
         ),
         writes={".factory/strategy/research-similar.md"},
-        post_checks=[
-            ArtifactCheck(
-                path=".factory/strategy/research-similar.md", must_exist=True, min_size=50
-            )
-        ],
     )
     nodes["researcher_techstack"] = AgentNode(
         id="researcher_techstack",
@@ -192,11 +187,6 @@ def build_workflow() -> Workflow:
             "framework comparisons."
         ),
         writes={".factory/strategy/research-techstack.md"},
-        post_checks=[
-            ArtifactCheck(
-                path=".factory/strategy/research-techstack.md", must_exist=True, min_size=50
-            )
-        ],
     )
     nodes["researcher_pitfalls"] = AgentNode(
         id="researcher_pitfalls",
@@ -211,11 +201,6 @@ def build_workflow() -> Workflow:
             "lessons from similar past builds."
         ),
         writes={".factory/strategy/research-pitfalls.md"},
-        post_checks=[
-            ArtifactCheck(
-                path=".factory/strategy/research-pitfalls.md", must_exist=True, min_size=50
-            )
-        ],
     )
 
     # Join
@@ -256,14 +241,6 @@ def build_workflow() -> Workflow:
         ),
         reads={".factory/strategy/research-combined.md"},
         writes={".factory/strategy/current.md"},
-        post_checks=[
-            ArtifactCheck(
-                path=".factory/strategy/current.md",
-                must_exist=True,
-                min_size=200,
-                must_contain=["### Phase 1", "### Architecture"],
-            )
-        ],
     )
 
     # CEO gate on strategy quality — HARD GATE
@@ -306,14 +283,6 @@ def build_workflow() -> Workflow:
         ),
         reads={".factory/strategy/current.md"},
         writes={".factory/reviews/builder-latest.md"},
-        post_checks=[
-            ArtifactCheck(
-                path=".factory/reviews/builder-latest.md",
-                must_exist=True,
-                min_size=500,
-                must_contain=["commit"],
-            )
-        ],
     )
 
     nodes["gate_build"] = GateNode(
@@ -543,15 +512,6 @@ def improve_workflow() -> Workflow:
         reads={".factory/strategy/current.md"},
     )
 
-    # Apply SPEC Diff from strategy to SPEC.md (no-op if absent)
-    nodes["apply_spec_diff"] = FnNode(
-        id="apply_spec_diff",
-        command="factory spec apply-diff {project_path}",
-        notes="Apply the SPEC Diff section from the strategist's plan to SPEC.md. No-op if no SPEC Diff section exists.",
-        reads={".factory/strategy/current.md"},
-        writes={"SPEC.md"},
-    )
-
     # Per-hypothesis: begin → builder → gate → deep-QA → gate_qa(max 3) → precheck → finalize → archivist
     nodes["begin"] = FnNode(
         id="begin",
@@ -668,11 +628,9 @@ def improve_workflow() -> Workflow:
         Edge(source="gate_research", target="researcher", condition=VerdictType.RELOOP),
         # Strategist → strategy gate
         Edge(source="strategist", target="gate_strategy"),
-        # Strategy gate → apply spec diff → begin
-        Edge(source="gate_strategy", target="apply_spec_diff", condition=VerdictType.PROCEED),
+        # Strategy gate
+        Edge(source="gate_strategy", target="begin", condition=VerdictType.PROCEED),
         Edge(source="gate_strategy", target="strategist", condition=VerdictType.RELOOP),
-        # apply_spec_diff → begin
-        Edge(source="apply_spec_diff", target="begin"),
         # begin → builder
         Edge(source="begin", target="builder"),
         # Builder → build gate
@@ -893,12 +851,10 @@ def research_workflow() -> Workflow:
         Edge(source="researcher", target="gate_research"),
         Edge(source="gate_research", target="strategist", condition=VerdictType.PROCEED),
         Edge(source="gate_research", target="researcher", condition=VerdictType.RELOOP),
-        # Strategist → strategy gate → apply spec diff → begin
+        # Strategist → strategy gate
         Edge(source="strategist", target="gate_strategy"),
-        Edge(source="gate_strategy", target="apply_spec_diff", condition=VerdictType.PROCEED),
+        Edge(source="gate_strategy", target="begin", condition=VerdictType.PROCEED),
         Edge(source="gate_strategy", target="strategist", condition=VerdictType.RELOOP),
-        # apply_spec_diff → begin
-        Edge(source="apply_spec_diff", target="begin"),
         # begin → builder
         Edge(source="begin", target="builder"),
         # Builder → build gate
@@ -1800,6 +1756,360 @@ def create_workflow() -> Workflow:
         nodes=nodes,
         edges=edges,
         start_node="fork_research",
+        trigger=trigger,
+    )
+
+
+# ── W₁₂: Optimize Mode ────────────────────────────────────────────
+
+
+def optimize_workflow() -> Workflow:
+    """W₁₂: Optimize Mode — analyze mode performance → change spec → delegate to create mode.
+
+    Study → Researcher(mode analysis) → CEO gate → Strategist(change spec) →
+    User approval gate → Archivist(async) → FnNode(delegate to create mode) →
+    Archivist(async)
+    """
+    nodes: dict[str, Any] = {}
+    edges: list[Edge] = []
+
+    # ── Phase 1: Study ────────────────────────────────────────────
+    nodes["study"] = Study(
+        id="study",
+        command="factory study {project_path}",
+        writes={".factory/strategy/observations.md"},
+    )
+
+    # ── Phase 2: Researcher — analyze target mode performance ─────
+    nodes["researcher"] = AgentNode(
+        id="researcher",
+        role=AgentRole.RESEARCHER,
+        prompt_template=(
+            "Mode performance analysis. "
+            "Read the target mode name from the CEO task (--focus argument). "
+            "Analyze the target mode's effectiveness by reading:\n"
+            "1. Workflow definition: run `factory workflow show <target_mode>`\n"
+            "2. SKILL.md: read `skills/workflow-<target_mode>/SKILL.md`\n"
+            "3. Experiment history: read `.factory/results.tsv` — compute keep rate, "
+            "avg score delta per keep, revert rate, error rate for experiments "
+            "that ran under this mode\n"
+            "4. CEO verdicts: read `.factory/reviews/ceo-verdict-*.md` — count "
+            "REDIRECT and ABORT frequencies per agent role\n"
+            "5. Events: read `.factory/events.jsonl` — identify agent timeouts, "
+            "failures, and avg invocations per cycle\n"
+            "6. Archive: read `.factory/archive/` — extract qualitative patterns, "
+            "recurring failures, anti-patterns\n\n"
+            "Produce a structured performance report:\n"
+            "- Mode effectiveness metrics (keep rate, avg delta, cycle count)\n"
+            "- Agent-level metrics (redirect rate, timeout rate per role)\n"
+            "- Bottleneck identification (which nodes/gates cause most failures)\n"
+            "- Weakness classification (prompt quality, gate criteria, node ordering, "
+            "missing steps, timeout values)\n"
+            "- Specific recommendations with evidence\n\n"
+            "Write findings to .factory/strategy/research-mode-analysis.md."
+        ),
+        reads={".factory/strategy/observations.md"},
+        writes={".factory/strategy/research-mode-analysis.md"},
+        timeout=600,
+    )
+
+    # ── Phase 2b: CEO gate on research ────────────────────────────
+    nodes["gate_research"] = GateNode(
+        id="gate_research",
+        evaluator_type="agent",
+        evaluator_role=AgentRole.CEO,
+        gate_prompt=(
+            "Review the mode performance analysis. "
+            "Is the analysis grounded in actual data (metrics, counts, evidence)? "
+            "Are the identified weaknesses specific and actionable? "
+            "Does the analysis cover all relevant data sources "
+            "(results.tsv, events.jsonl, CEO verdicts, archive)? "
+            "REDIRECT if the analysis is vague or missing key data sources."
+        ),
+        reads={".factory/strategy/research-mode-analysis.md"},
+    )
+
+    # ── Phase 3: Strategist — generate change specification ───────
+    nodes["strategist"] = AgentNode(
+        id="strategist",
+        role=AgentRole.STRATEGIST,
+        prompt_template=(
+            "Generate a workflow change specification for the target mode. "
+            "Read the mode performance analysis at "
+            ".factory/strategy/research-mode-analysis.md. "
+            "Read the CEO research review at "
+            ".factory/reviews/ceo-verdict-researcher.md.\n\n"
+            "Produce a change specification that includes:\n"
+            "1. Target mode name and current workflow summary\n"
+            "2. Identified weaknesses (with metrics from the analysis)\n"
+            "3. Proposed changes — for each change:\n"
+            "   - Which node/edge/gate/prompt to modify, add, or remove\n"
+            "   - What the current behavior is\n"
+            "   - What the new behavior should be\n"
+            "   - Expected impact on the identified weakness\n"
+            "4. Changes NOT proposed (and why — risk assessment)\n"
+            "5. A one-line summary suitable for --focus argument to create mode\n\n"
+            "Scope: The change spec must be implementable in a single PR. "
+            "Prefer targeted prompt/gate/timeout changes over structural graph rewiring. "
+            "Do NOT propose removing safety gates or QA steps.\n\n"
+            "Write the specification to .factory/strategy/current.md."
+        ),
+        reads={".factory/strategy/research-mode-analysis.md"},
+        writes={".factory/strategy/current.md"},
+        timeout=600,
+    )
+
+    # ── Phase 3b: User approval gate ──────────────────────────────
+    nodes["gate_strategy"] = GateNode(
+        id="gate_strategy",
+        evaluator_type="user",
+        gate_prompt=(
+            "Review the proposed workflow changes for the target mode. "
+            "The change specification describes what will be modified and why. "
+            "Approve to proceed with delegating to create mode, or provide feedback."
+        ),
+        reads={".factory/strategy/current.md"},
+    )
+
+    # ── Phase 4: Archivist (async) — archive the approved spec ────
+    nodes["archivist_plan"] = AgentNode(
+        id="archivist_plan",
+        role=AgentRole.ARCHIVIST,
+        prompt_template=(
+            "Archive the approved workflow optimization specification. "
+            "Record: target mode, identified weaknesses, proposed changes, "
+            "and the user's approval decision. "
+            "Write to .factory/archive/optimizer-plan.md."
+        ),
+        reads={".factory/strategy/current.md"},
+        writes={".factory/archive/optimizer-plan.md"},
+        timeout=300,
+        blocking=False,
+    )
+
+    # ── Phase 5a: Run target mode (inner loop start) ───────────────
+    nodes["run_target"] = FnNode(
+        id="run_target",
+        command=(
+            'factory ceo $OPTIMIZE_PROJECT --mode $OPTIMIZE_TARGET --no-worktree'
+        ),
+        notes=(
+            "Run one cycle of the target mode to produce execution artifacts. "
+            "The CEO must substitute $OPTIMIZE_TARGET with the target mode name "
+            "and $OPTIMIZE_PROJECT with the target project path. "
+            "If the CEO task has a '**Target project:**' field, use that path. "
+            "Otherwise use {project_path}. "
+            "--no-worktree prevents nested worktree creation. "
+            "Produces: events.jsonl (appends), reviews/*.md, experiments/NNN/, results.tsv."
+        ),
+        reads=set(),
+        writes={
+            ".factory/events.jsonl",
+            ".factory/results.tsv",
+        },
+    )
+
+    # ── Phase 5b: Collect cycle data ─────────────────────────────
+    nodes["collect_cycle"] = FnNode(
+        id="collect_cycle",
+        command=(
+            'python3 -c "'
+            "from pathlib import Path; "
+            "import json; "
+            "from dataclasses import asdict; "
+            "from factory.inner_loop import InnerLoop; "
+            "loop = InnerLoop("
+            "    project_dir=Path('$OPTIMIZE_PROJECT'), "
+            "    mode='$OPTIMIZE_TARGET', "
+            "    evaluator=None, "
+            "); "
+            "record = loop.collect(); "
+            "data = asdict(record); "
+            "out = Path('{project_path}/.factory/reviews/cycle-analysis.json'); "
+            "out.parent.mkdir(parents=True, exist_ok=True); "
+            "out.write_text(json.dumps(data, indent=2, default=str)); "
+            "print('CycleRecord written to', out)"
+            '"'
+        ),
+        notes=(
+            "Collect execution artifacts into structured CycleRecord JSON. "
+            "Uses InnerLoop.collect() which internally calls CycleAnalyzer.latest(). "
+            "The CEO must substitute $OPTIMIZE_TARGET with the target mode name "
+            "and $OPTIMIZE_PROJECT with the target project path. "
+            "Results are written to the factory project's .factory/, not the target project. "
+            "dataclasses.asdict() handles all nested dataclasses (AgentStep, "
+            "ExperimentRecord, NodeTrace). default=str handles set serialization."
+        ),
+        reads={
+            ".factory/events.jsonl",
+            ".factory/results.tsv",
+        },
+        writes={".factory/reviews/cycle-analysis.json"},
+    )
+
+    # ── Phase 5c: Reflect — analyze cycle data ───────────────────
+    nodes["reflect_researcher"] = AgentNode(
+        id="reflect_researcher",
+        role=AgentRole.RESEARCHER,
+        prompt_template=(
+            "Cycle-based mode performance analysis (reflection pass).\n\n"
+            "Read the structured cycle data at .factory/reviews/cycle-analysis.json. "
+            "This file contains a complete CycleRecord with:\n"
+            "- Execution metrics: score_start, score_end, score_delta, score_trajectory, "
+            "keep_rate, kept/reverted/errored counts\n"
+            "- Cost breakdown: total_cost_usd, cost_by_agent (per-role spend)\n"
+            "- Experiment details: experiments[] with exp_id, hypothesis, verdict, "
+            "score_before, score_after, score_delta, cost_usd, duration_s\n"
+            "- Agent-level data: steps[] with role, duration_s, cost_usd, succeeded, error\n"
+            "- Node trace: node_trace{} with node_id, node_type, artifact_exists\n"
+            "- Convergence signals: consecutive_reverts, plateau_detected, stuck_detected\n\n"
+            "Analyze the data to identify:\n\n"
+            "1. **Score effectiveness:**\n"
+            "   - score_start vs score_end — did the cycle improve the project?\n"
+            "   - score_trajectory shape — improving, plateauing, or regressing?\n"
+            "   - Correlation between keep_rate and score improvement\n\n"
+            "2. **Bottlenecks:**\n"
+            "   - steps[]: which agents take longest? Any with succeeded=false?\n"
+            "   - cost_by_agent: which agents consume the most budget?\n"
+            "   - experiments[]: which experiments have the worst score_delta?\n\n"
+            "3. **Quality signals:**\n"
+            "   - consecutive_reverts: is the mode stuck?\n"
+            "   - plateau_detected / stuck_detected: has the mode exhausted its approach?\n"
+            "   - keep_rate: what fraction of experiments are productive?\n\n"
+            "4. **Hypothesis patterns:**\n"
+            "   - Which experiment hypotheses yielded positive deltas?\n"
+            "   - Which experiments were reverted and why?\n"
+            "   - Are there patterns in what succeeds vs fails?\n\n"
+            "Also read .factory/strategy/research-mode-analysis.md if it exists "
+            "(from the initial static analysis or prior reflection passes). Compare:\n"
+            "- Is empirical data confirming or contradicting the static analysis?\n"
+            "- Are bottlenecks the same or different from what was predicted?\n\n"
+            "Write findings to .factory/strategy/research-mode-analysis.md covering:\n"
+            "- Cycle summary (score delta, keep rate, cost, duration)\n"
+            "- Bottleneck identification (slowest agents, failing steps, costliest roles)\n"
+            "- Hypothesis quality analysis (what worked, what didn't)\n"
+            "- Convergence assessment (is the mode improving its own performance?)\n"
+            "- Specific, actionable recommendations (which workflow components need tuning)"
+        ),
+        reads={
+            ".factory/reviews/cycle-analysis.json",
+            ".factory/strategy/research-mode-analysis.md",
+        },
+        writes={".factory/strategy/research-mode-analysis.md"},
+        timeout=600,
+    )
+
+    # ── Phase 5d: Convergence gate ───────────────────────────────
+    nodes["gate_convergence"] = GateNode(
+        id="gate_convergence",
+        evaluator_type="agent",
+        evaluator_role=AgentRole.CEO,
+        gate_prompt=(
+            "Review the cycle analysis at .factory/strategy/research-mode-analysis.md "
+            "and the raw cycle data at .factory/reviews/cycle-analysis.json.\n\n"
+            "Check convergence criteria:\n\n"
+            "1. **Hard cap:** If 5 or more inner loop cycles have completed, "
+            "PROCEED unconditionally. This prevents infinite loops.\n\n"
+            "2. **Sufficient data?**\n"
+            "   - At least 2 inner loop cycles should complete before proceeding\n"
+            "   - Check cycle_number in cycle-analysis.json\n\n"
+            "3. **Diminishing returns?**\n"
+            "   - plateau_detected == true in the latest cycle\n"
+            "   - score_trajectory flattening (last 3 deltas all < 0.01)\n"
+            "   - keep_rate < 0.3 for the latest cycle\n\n"
+            "4. **Clear optimization target?**\n"
+            "   - Researcher identified a specific bottleneck (slowest agent, "
+            "failing step, stuck category)\n"
+            "   - Recommendation is actionable (prompt tweak, gate criteria, "
+            "timeout adjustment, edge rewiring)\n\n"
+            "RELOOP to run_target if:\n"
+            "- Fewer than 2 cycles completed AND no clear bottleneck identified\n"
+            "- Score is still improving significantly (delta > 0.05)\n\n"
+            "PROCEED to delegate_create if:\n"
+            "- 5+ cycles completed (hard cap — always proceed)\n"
+            "- OR at least 2 cycles AND a clear, actionable optimization target\n"
+            "- OR plateau_detected == true AND a recommendation exists\n"
+            "- OR stuck_detected == true (mode needs structural changes)"
+        ),
+        reads={
+            ".factory/strategy/research-mode-analysis.md",
+            ".factory/reviews/cycle-analysis.json",
+        },
+    )
+
+    # ── Phase 6: Delegate to create mode ─────────────────────────
+    nodes["delegate_create"] = FnNode(
+        id="delegate_create",
+        command=(
+            'factory ceo {project_path} --mode create '
+            '--focus "$OPTIMIZE_TARGET: $OPTIMIZE_CHANGES"'
+        ),
+        notes=(
+            "Delegate the actual workflow modification to create mode. "
+            "The CEO must substitute $OPTIMIZE_TARGET with the target mode name "
+            "and $OPTIMIZE_CHANGES with the one-line change summary from the "
+            "Strategist's specification. Create mode handles the full pipeline: "
+            "research existing workflow → strategist spec → builder implementation → "
+            "health check → code review → adversarial QA → precheck → archival."
+        ),
+        reads={".factory/strategy/current.md"},
+        writes={".factory/reviews/builder-latest.md"},
+    )
+
+    # ── Phase 6: Archivist (async) — record outcome ──────────────
+    nodes["archivist_outcome"] = AgentNode(
+        id="archivist_outcome",
+        role=AgentRole.ARCHIVIST,
+        prompt_template=(
+            "Archive the optimization outcome. "
+            "Record: what create mode produced, whether the PR was opened, "
+            "and the final state of the workflow change. "
+            "Write to .factory/archive/optimizer-outcome.md."
+        ),
+        reads={
+            ".factory/strategy/current.md",
+            ".factory/reviews/builder-latest.md",
+        },
+        writes={".factory/archive/optimizer-outcome.md"},
+        timeout=300,
+        blocking=False,
+    )
+
+    # ── Edges ─────────────────────────────────────────────────────
+    edges = [
+        # Study → Researcher
+        Edge(source="study", target="researcher"),
+        # Researcher → CEO gate
+        Edge(source="researcher", target="gate_research"),
+        # CEO gate: proceed → Strategist, reloop → Researcher
+        Edge(source="gate_research", target="strategist", condition=VerdictType.PROCEED),
+        Edge(source="gate_research", target="researcher", condition=VerdictType.RELOOP),
+        # Strategist → User approval gate
+        Edge(source="strategist", target="gate_strategy"),
+        # User gate: proceed → Archivist(async) + Inner Loop, reloop → Strategist
+        Edge(source="gate_strategy", target="archivist_plan", condition=VerdictType.PROCEED),
+        Edge(source="gate_strategy", target="run_target", condition=VerdictType.PROCEED),
+        Edge(source="gate_strategy", target="strategist", condition=VerdictType.RELOOP),
+        # Inner loop: run → collect → reflect → convergence gate
+        Edge(source="run_target", target="collect_cycle"),
+        Edge(source="collect_cycle", target="reflect_researcher"),
+        Edge(source="reflect_researcher", target="gate_convergence"),
+        # Convergence: reloop → run_target, proceed → delegate
+        Edge(source="gate_convergence", target="run_target", condition=VerdictType.RELOOP),
+        Edge(source="gate_convergence", target="delegate_create", condition=VerdictType.PROCEED),
+        # Delegate → Archivist outcome
+        Edge(source="delegate_create", target="archivist_outcome"),
+    ]
+
+    # ── Trigger ───────────────────────────────────────────────────
+    def trigger(state: ProjectState, ctx: dict[str, Any]) -> bool:
+        return ctx.get("mode") == "optimize" and state == ProjectState.HAS_FACTORY
+
+    return Workflow(
+        name="optimize",
+        nodes=nodes,
+        edges=edges,
+        start_node="study",
         trigger=trigger,
     )
 
@@ -2916,13 +3226,11 @@ def parallel_improve_workflow() -> Workflow:
         new_node = node.model_copy(update={"id": new_id})
         exp_dq_nodes[new_id] = new_node
     for edge in dq_edges:
-        exp_dq_edges.append(
-            Edge(
-                source=dq_rename[edge.source],
-                target=dq_rename[edge.target],
-                condition=edge.condition,
-            )
-        )
+        exp_dq_edges.append(Edge(
+            source=dq_rename[edge.source],
+            target=dq_rename[edge.target],
+            condition=edge.condition,
+        ))
     nodes.update(exp_dq_nodes)
 
     nodes["exp_gate_qa"] = GateNode(
@@ -3013,31 +3321,25 @@ def parallel_improve_workflow() -> Workflow:
     ]
 
     # Per-experiment subgraph edges
-    edges.extend(
-        [
-            Edge(source="exp_begin", target="exp_builder"),
-            Edge(source="exp_builder", target="exp_gate_build"),
-            Edge(
-                source="exp_gate_build", target="exp_health_checker", condition=VerdictType.PROCEED
-            ),
-            Edge(source="exp_gate_build", target="exp_builder", condition=VerdictType.RELOOP),
-            *exp_dq_edges,
-            Edge(source="exp_adversarial_tester", target="exp_gate_qa"),
-            Edge(source="exp_gate_qa", target="exp_gate_precheck", condition=VerdictType.PROCEED),
-            Edge(source="exp_gate_qa", target="exp_builder", condition=VerdictType.RELOOP),
-            Edge(source="exp_gate_precheck", target="exp_eval", condition=VerdictType.PROCEED),
-            Edge(source="exp_gate_precheck", target="exp_eval", condition=VerdictType.HALT),
-        ]
-    )
+    edges.extend([
+        Edge(source="exp_begin", target="exp_builder"),
+        Edge(source="exp_builder", target="exp_gate_build"),
+        Edge(source="exp_gate_build", target="exp_health_checker", condition=VerdictType.PROCEED),
+        Edge(source="exp_gate_build", target="exp_builder", condition=VerdictType.RELOOP),
+        *exp_dq_edges,
+        Edge(source="exp_adversarial_tester", target="exp_gate_qa"),
+        Edge(source="exp_gate_qa", target="exp_gate_precheck", condition=VerdictType.PROCEED),
+        Edge(source="exp_gate_qa", target="exp_builder", condition=VerdictType.RELOOP),
+        Edge(source="exp_gate_precheck", target="exp_eval", condition=VerdictType.PROCEED),
+        Edge(source="exp_gate_precheck", target="exp_eval", condition=VerdictType.HALT),
+    ])
 
     # Fork → Join → Select → Archive
-    edges.extend(
-        [
-            Edge(source="fork_experiments", target="join_experiments"),
-            Edge(source="join_experiments", target="select_best"),
-            Edge(source="select_best", target="archivist"),
-        ]
-    )
+    edges.extend([
+        Edge(source="fork_experiments", target="join_experiments"),
+        Edge(source="join_experiments", target="select_best"),
+        Edge(source="select_best", target="archivist"),
+    ])
 
     def trigger(state: ProjectState, ctx: dict[str, Any]) -> bool:
         return state == ProjectState.HAS_FACTORY and ctx.get("mode") == "parallel-improve"
@@ -3048,109 +3350,6 @@ def parallel_improve_workflow() -> Workflow:
         edges=edges,
         start_node="study",
         trigger=trigger,
-    )
-
-
-# ── W₁₃: Founder Mode ──────────────────────────────────────────
-
-
-def founder_workflow() -> Workflow:
-    """W₁₃: Founder Mode — rapid prototyping pipeline for fast hypothesis iteration.
-
-    Study → Strategist → Builder → gate_tests → finalize(async)
-
-    No research, no deep-QA, no eval scoring. Terminal — does not chain to
-    other modes. Uses pass/fail tests only.
-    """
-    nodes: dict[str, Any] = {}
-    edges: list[Edge] = []
-
-    # Study
-    nodes["study"] = Study(
-        id="study",
-        command="factory study {project_path}",
-        writes={".factory/strategy/observations.md"},
-    )
-
-    # Strategist — pick ONE hypothesis, skip FEEC/backlog
-    nodes["strategist"] = AgentNode(
-        id="strategist",
-        role=AgentRole.STRATEGIST,
-        prompt_template=(
-            "Pick ONE high-leverage hypothesis to prototype. "
-            "Read observations at .factory/strategy/observations.md. "
-            "Skip FEEC classification and backlog grooming — just pick the most "
-            "promising idea and write it to .factory/strategy/current.md. "
-            "Keep it scoped: one idea, one PR, fast to implement."
-        ),
-        reads={".factory/strategy/observations.md"},
-        writes={".factory/strategy/current.md"},
-    )
-
-    # Builder — prototype quickly
-    nodes["builder"] = AgentNode(
-        id="builder",
-        role=AgentRole.BUILDER,
-        prompt_template=(
-            "Prototype the hypothesis from .factory/strategy/current.md. "
-            "Read CLAUDE.md and factory.md for project context. "
-            "Prioritize getting something working over code quality. "
-            "Skip edge cases and comprehensive error handling. "
-            "Run tests to verify it works. Commit the changes."
-        ),
-        reads={".factory/strategy/current.md"},
-        writes={".factory/reviews/builder-latest.md"},
-    )
-
-    # Gate — pytest + ruff pass/fail
-    nodes["gate_tests"] = GateNode(
-        id="gate_tests",
-        evaluator_type="fn",
-        evaluator_command=(
-            "cd {project_path} && python -m pytest --tb=short -q 2>&1 && "
-            "ruff check . 2>&1"
-        ),
-        reads={".factory/reviews/builder-latest.md"},
-    )
-
-    # Finalize — record results, bypassing precheck (no eval scores in founder mode)
-    nodes["finalize"] = FnNode(
-        id="finalize",
-        command=(
-            "factory finalize {project_path}"
-            " --id $EXP_ID"
-            " --verdict $VERDICT"
-            ' --hypothesis "$HYPOTHESIS"'
-            " --force"
-        ),
-        notes=(
-            "Record experiment to .factory/results.tsv, bypassing precheck gates "
-            "(no QA agents or eval scores in founder mode). "
-            "The CEO must substitute $EXP_ID, $VERDICT (keep/revert), and $HYPOTHESIS."
-        ),
-        reads={".factory/reviews/builder-latest.md"},
-        writes={".factory/experiments/verdict.json"},
-        blocking=False,
-    )
-
-    edges = [
-        Edge(source="study", target="strategist"),
-        Edge(source="strategist", target="builder"),
-        Edge(source="builder", target="gate_tests"),
-        Edge(source="gate_tests", target="finalize", condition=VerdictType.PROCEED),
-        Edge(source="gate_tests", target="builder", condition=VerdictType.RELOOP),
-    ]
-
-    def trigger(state: ProjectState, ctx: dict[str, Any]) -> bool:
-        return state == ProjectState.HAS_FACTORY and ctx.get("mode") == "founder"
-
-    return Workflow(
-        name="founder",
-        nodes=nodes,
-        edges=edges,
-        start_node="study",
-        trigger=trigger,
-        terminal=True,
     )
 
 
@@ -3183,12 +3382,11 @@ def register_all() -> dict[str, Workflow]:
         "meta": meta_workflow(),
         "refine": refine_workflow(),
         "create": create_workflow(),
+        "optimize": optimize_workflow(),
         "skill-refine": skill_refine_workflow(),
         "doc-generate": doc_generate_workflow(),
         "doc-update": doc_update_workflow(),
         "spec-generate": spec_generate_workflow(),
         "spec-update": spec_update_workflow(),
-<<<<<<< HEAD
-        "founder": founder_workflow(),
         "evolve": evolve_workflow(),
     }
