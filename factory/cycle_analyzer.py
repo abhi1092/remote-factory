@@ -11,9 +11,7 @@ import csv
 import json
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Any
-
-from factory.workflow.primitives import AgentNode, FnNode, GateNode, Workflow
+from factory.workflow.primitives import AgentNode, Workflow
 
 
 @dataclass
@@ -482,7 +480,7 @@ class CycleAnalyzer:
 
     @staticmethod
     def _ts_diff(start: str, end: str) -> float:
-        from datetime import datetime, timezone
+        from datetime import datetime
         fmt_options = [
             "%Y-%m-%dT%H:%M:%S.%f%z",
             "%Y-%m-%dT%H:%M:%S%z",
