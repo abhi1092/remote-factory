@@ -127,13 +127,15 @@ class InnerLoop:
         if directives:
             self._write_directives(directives)
 
-        subprocess.run(
+        result = subprocess.run(
             [sys.executable, "-m", "factory", "ceo", str(self.project_dir),
              "--mode", self.mode, "--no-worktree"],
             cwd=self.project_dir,
         )
 
         record = self._collect_results()
+        if result.returncode != 0:
+            record.errored = (record.errored or 0) + 1
         record.cycle_number = self._step_count + 1
         self._step_count += 1
         self._history.append(record)
@@ -173,6 +175,9 @@ class InnerLoop:
                 score_end=None,
                 score_delta=None,
             )
+
+        if record.mode is None:
+            record.mode = self.mode
 
         if self.evaluator and record.experiments:
             for exp in record.experiments:

@@ -180,8 +180,10 @@ class CycleAnalyzer:
             line = line.strip()
             if line:
                 try:
-                    events.append(json.loads(line))
-                except json.JSONDecodeError:
+                    e = json.loads(line)
+                    if isinstance(e, dict) and "type" in e and "timestamp" in e:
+                        events.append(e)
+                except (json.JSONDecodeError, TypeError):
                     continue
         return events
 
@@ -435,8 +437,8 @@ class CycleAnalyzer:
             )
             if node.writes:
                 nt.artifact_exists = any(
-                    (self.factory_dir / w.lstrip(".factory/")).exists()
-                    or (self.factory_dir.parent / w.lstrip("./")).exists()
+                    (self.factory_dir / w.removeprefix(".factory/")).exists()
+                    or (self.factory_dir.parent / w.removeprefix("./")).exists()
                     for w in node.writes
                 )
             step = step_by_role.get(role_str) if role_str else None
