@@ -206,7 +206,7 @@ class CycleAnalyzer:
                 end_ts = e["timestamp"]
                 duration = self._ts_diff(begin_ts, end_ts)
 
-                agents_in_exp = []
+                agents_in_exp: list[AgentStep] = []
                 cost = 0.0
                 if begin_idx is not None:
                     for j in range(begin_idx, i + 1):
@@ -309,7 +309,7 @@ class CycleAnalyzer:
         tsv_path = self.factory_dir / "results.tsv"
         if not tsv_path.exists():
             return
-        rows: dict[int, dict] = {}
+        rows: dict[int, dict[str, str]] = {}
         with open(tsv_path) as f:
             reader = csv.DictReader(f, delimiter="\t")
             for row in reader:
@@ -319,25 +319,25 @@ class CycleAnalyzer:
                     continue
 
         for exp in experiments:
-            row = rows.get(exp.exp_id)
-            if not row:
+            tsv_row = rows.get(exp.exp_id)
+            if not tsv_row:
                 continue
-            if not exp.hypothesis and row.get("hypothesis"):
-                exp.hypothesis = row["hypothesis"]
-            if row.get("score_before"):
+            if not exp.hypothesis and tsv_row.get("hypothesis"):
+                exp.hypothesis = tsv_row["hypothesis"]
+            if tsv_row.get("score_before"):
                 try:
-                    exp.score_before = float(row["score_before"])
+                    exp.score_before = float(tsv_row["score_before"])
                 except ValueError:
                     pass
-            if row.get("score_after"):
+            if tsv_row.get("score_after"):
                 try:
-                    exp.score_after = float(row["score_after"])
+                    exp.score_after = float(tsv_row["score_after"])
                 except ValueError:
                     pass
             if exp.score_before is not None and exp.score_after is not None:
                 exp.score_delta = exp.score_after - exp.score_before
-            if row.get("verdict"):
-                exp.verdict = row["verdict"]
+            if tsv_row.get("verdict"):
+                exp.verdict = tsv_row["verdict"]
 
     def _add_missing_experiments_from_tsv(self, experiments: list[ExperimentRecord]) -> None:
         """Add experiments that exist in results.tsv but not in events.jsonl."""
