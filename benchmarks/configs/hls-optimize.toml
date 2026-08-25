@@ -1,0 +1,18 @@
+[meta]
+name = "hls-optimize"
+description = "HLS synthesis optimization — iterative hypothesis-driven design space exploration with adversarial verification"
+
+[test]
+format = "json"
+command = "python3 score_hls.py {project_dir}"
+timeout = 3600
+metric_path = "score"
+
+[instances]
+format = "directory"
+
+[seed_workflow]
+name = "hls-optimize"
+
+[scoring]
+method = "partial_credit"

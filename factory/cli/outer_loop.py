@@ -160,6 +160,8 @@ def _cmd_calibrate(args: argparse.Namespace) -> int:
             seed_workflow=resolved_seed_workflow,
             instance_format=resolved_instance_format,
             prep_command=resolved_prep_command,
+            frozen_node_ids=getattr(args, "frozen_node_ids", []),
+            mandatory_node_roles=getattr(args, "mandatory_node_roles", []),
         )
 
     root = init_filesystem(project_path, config)
@@ -184,15 +186,31 @@ def _cmd_calibrate(args: argparse.Namespace) -> int:
             terminal=True,
         )
     else:
+        base_workflow = None
+        # Try plugin-registered workflows (e.g. hls-optimize)
         try:
-            from factory.workflow.contributed.featurebench.workflow import (
-                workflow as featurebench_workflow,
-            )
+            from factory.plugins import PluginRegistry, load_plugins
+            from factory.workflow.registry import WorkflowRegistry
 
-            base_workflow = featurebench_workflow()
-        except ImportError:
-            print(f"Error: could not load contributed workflow for benchmark '{benchmark}'.", file=sys.stderr)
-            return 1
+            plugin_reg = PluginRegistry()
+            load_plugins(plugin_reg)
+            if benchmark in plugin_reg.modes:
+                wreg = WorkflowRegistry()
+                wreg.discover()
+                base_workflow = wreg.get_workflow(benchmark)
+        except Exception:
+            pass
+
+        if base_workflow is None:
+            try:
+                from factory.workflow.contributed.featurebench.workflow import (
+                    workflow as featurebench_workflow,
+                )
+
+                base_workflow = featurebench_workflow()
+            except ImportError:
+                print(f"Error: could not load workflow for benchmark '{benchmark}'.", file=sys.stderr)
+                return 1
 
     target_dir = Path(config.target_project) if config.target_project else None
     registry = EphemeralModeRegistry(project_path, target_dir=target_dir)
@@ -612,6 +630,18 @@ def add_outer_loop_parser(subparsers: argparse._SubParsersAction) -> None:  # ty
         "--test-format",
         default="",
         help="Test output format: pytest, exit_code, json, exact_match (auto-detected from benchmark config if omitted)",
+    )
+    cal.add_argument(
+        "--frozen-node-ids",
+        nargs="*",
+        default=[],
+        help="Node IDs that the outer loop must not mutate (e.g. load_config gate_baseline)",
+    )
+    cal.add_argument(
+        "--mandatory-node-roles",
+        nargs="*",
+        default=[],
+        help="Agent roles that cannot be removed (e.g. BUILDER ADVERSARIAL_TESTER)",
     )
 
     ev = outer_sub.add_parser("evaluate", help="Evaluate current generation")

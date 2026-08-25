@@ -319,8 +319,36 @@ class SwarmEvaluator:
             label = individual_id[:8] if individual_id else mode_name[:12]
             wt_path = self._create_worktree(project_dir, label)
 
+            # When the target project is a subdirectory of a git repo,
+            # the worktree checks out the full repo. Resolve the subdir offset
+            # and copy .factory/ files there so the CEO finds them.
+            effective_project_dir = wt_path
+            try:
+                git_root_result = subprocess.run(
+                    ["git", "-C", project_dir, "rev-parse", "--show-toplevel"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                if git_root_result.returncode == 0:
+                    git_root = Path(git_root_result.stdout.strip())
+                    target = Path(project_dir).resolve()
+                    if target != git_root:
+                        rel = target.relative_to(git_root)
+                        subdir = wt_path / rel
+                        if subdir.is_dir():
+                            effective_project_dir = subdir
+                            for copy_subdir in ["outer_loop/modes", "workflows"]:
+                                src_dir = wt_path / ".factory" / copy_subdir
+                                dst_dir = effective_project_dir / ".factory" / copy_subdir
+                                if src_dir.exists():
+                                    dst_dir.mkdir(parents=True, exist_ok=True)
+                                    for f in src_dir.iterdir():
+                                        if f.is_file():
+                                            shutil.copy2(f, dst_dir / f.name)
+            except Exception:
+                pass
+
             loop = FeatureBenchInnerLoop(
-                project_dir=wt_path,
+                project_dir=effective_project_dir,
                 mode=mode_name,
                 workflow=workflow,
                 frozen_nodes=frozenset(self._config.frozen_node_ids),
@@ -330,7 +358,7 @@ class SwarmEvaluator:
             )
             record = loop.step()
 
-            summary_data = self._read_cycle_summary(wt_path, loop.mode)
+            summary_data = self._read_cycle_summary(effective_project_dir, loop.mode)
             summary_score = float(summary_data.get("score", 0.0)) if summary_data else None
             score = summary_score if summary_score is not None else (record.score_end or 0.0)
             cost = record.total_cost_usd
