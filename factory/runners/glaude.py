@@ -3,6 +3,10 @@
 Glaude is a wrapper around Claude Code that routes through a CONNECT proxy
 to the RITS GLM-5.2 endpoint. It has the same CLI interface as claude —
 all flags, output formats, and session management work identically.
+
+The RITS endpoint serves a single model, so any model override from workflow
+node configs (e.g. "sonnet", "opus") is stripped — glaude's own default
+model injection handles it.
 """
 
 from __future__ import annotations
@@ -20,8 +24,10 @@ if TYPE_CHECKING:
 class GlaudeRunner(ClaudeRunner):
     """Runner implementation for Glaude (GLM-5.2 via RITS).
 
-    Inherits all behavior from ClaudeRunner — the only differences are the
-    binary name ('glaude' instead of 'claude') and metadata.
+    Inherits all behavior from ClaudeRunner. Key differences:
+    - Binary is 'glaude' instead of 'claude'
+    - Strips any --model flag so glaude injects its own default model
+      (the RITS endpoint only serves one model)
     """
 
     name: str = "glaude"
@@ -39,12 +45,31 @@ class GlaudeRunner(ClaudeRunner):
             supports_session_name=True,
             supports_session_resume=True,
             supports_background=True,
+            supports_model_override=False,
         )
+
+    @staticmethod
+    def _strip_model_flag(cmd: list[str]) -> list[str]:
+        """Remove --model / --model=VALUE from the command so glaude uses its default."""
+        result: list[str] = []
+        skip_next = False
+        for arg in cmd:
+            if skip_next:
+                skip_next = False
+                continue
+            if arg == "--model":
+                skip_next = True
+                continue
+            if arg.startswith("--model="):
+                continue
+            result.append(arg)
+        return result
 
     def build_command(
         self, request: AgentRunRequest
     ) -> tuple[list[str], dict[str, str], list[Path]]:
         cmd, env, temp_files = super().build_command(request)
+        cmd = self._strip_model_flag(cmd)
         cmd[0] = "glaude"
         return cmd, env, temp_files
 
@@ -52,5 +77,6 @@ class GlaudeRunner(ClaudeRunner):
         self, request: AgentRunRequest
     ) -> tuple[list[str], dict[str, str], list[Path]]:
         cmd, env, temp_files = super().build_interactive_command(request)
+        cmd = self._strip_model_flag(cmd)
         cmd[0] = "glaude"
         return cmd, env, temp_files
