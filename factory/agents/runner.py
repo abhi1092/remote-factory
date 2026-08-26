@@ -63,7 +63,8 @@ def resolve_prompt(
     Resolution order:
     1. Project-specific override: <project>/.factory/agents/<role>.md
     2. User-global: ~/.factory/agents/prompts/<role>.md
-    3. Factory default: factory/agents/prompts/<role>.md
+    3. Plugin-provided: registered via PluginRegistry.add_prompt_search_path()
+    4. Factory default: factory/agents/prompts/<role>.md
 
     When *use_profile* is True, loads ~/.factory/profile.md and appends it
     after the ACE playbook injection.
@@ -105,6 +106,26 @@ def resolve_prompt(
         if role == "ceo" and workflow_mode and project_path is not None:
             prompt = _maybe_inject_skill(prompt, project_path, workflow_mode)
         return prompt
+
+    # Check plugin-provided prompts
+    try:
+        from factory.plugins import get_registry
+        for search_path in get_registry().prompt_search_paths:
+            plugin_path = Path(search_path) / f"{role}.md"
+            if plugin_path.exists():
+                logger.info("Using plugin prompt for %s: %s", role, plugin_path)
+                prompt = plugin_path.read_text()
+                playbook = load_playbook(role)
+                if playbook:
+                    prompt = inject_playbook(prompt, playbook)
+                    logger.info("Injected playbook for %s (plugin)", role)
+                if use_profile:
+                    prompt = _maybe_inject_profile(prompt, role)
+                if role == "ceo" and workflow_mode and project_path is not None:
+                    prompt = _maybe_inject_skill(prompt, project_path, workflow_mode)
+                return prompt
+    except Exception:
+        pass
 
     # Fall back to factory default
     default_path = _PROMPTS_DIR / f"{role}.md"

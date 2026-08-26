@@ -52,6 +52,7 @@ class PluginRegistry:
     agent_roles: list[str] = field(default_factory=list)
     ceo_pre_hooks: list[Callable[..., Any]] = field(default_factory=list)
     workflow_search_paths: list[str] = field(default_factory=list)
+    prompt_search_paths: list[str] = field(default_factory=list)
     parser_extensions: dict[str, list[Callable[[argparse.ArgumentParser], None]]] = field(
         default_factory=dict
     )
@@ -101,6 +102,10 @@ class PluginRegistry:
 
     def add_workflow_search_path(self, path: str) -> None:
         self.workflow_search_paths.append(path)
+
+    def add_prompt_search_path(self, path: str) -> None:
+        """Register a directory containing agent prompt overrides (<role>.md files)."""
+        self.prompt_search_paths.append(path)
 
 
 _registry: PluginRegistry | None = None
