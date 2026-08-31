@@ -49,7 +49,7 @@ class TestBuildCommand:
         assert cmd[0] == "codex"
         assert cmd[1] == "exec"
         assert "--json" in cmd
-        assert "never" in cmd
+        assert "--dangerously-bypass-approvals-and-sandbox" in cmd
         assert cmd[-1] == "Fix the bug"
 
     def test_model_flag(self, tmp_path: Path) -> None:
@@ -63,7 +63,7 @@ class TestBuildCommand:
         runner = CodexRunner()
         req = self._make_request(tmp_path)
         cmd, _env, _temp = runner.build_command(req)
-        idx = cmd.index("--cd")
+        idx = cmd.index("-C")
         assert cmd[idx + 1] == str(tmp_path)
 
     def test_no_model_flag_when_none(self, tmp_path: Path) -> None:
@@ -71,6 +71,29 @@ class TestBuildCommand:
         req = self._make_request(tmp_path)
         cmd, _env, _temp = runner.build_command(req)
         assert "--model" not in cmd
+
+
+class TestModelResolution:
+    def test_strips_sonnet(self) -> None:
+        assert CodexRunner._resolve_model("sonnet") is None
+
+    def test_strips_opus(self) -> None:
+        assert CodexRunner._resolve_model("opus") is None
+
+    def test_strips_claude_prefixed(self) -> None:
+        assert CodexRunner._resolve_model("claude-sonnet-4-5") is None
+
+    def test_passes_openai_model(self) -> None:
+        assert CodexRunner._resolve_model("o3") == "o3"
+
+    def test_passes_gpt_model(self) -> None:
+        assert CodexRunner._resolve_model("gpt-4o") == "gpt-4o"
+
+    def test_none_stays_none(self) -> None:
+        assert CodexRunner._resolve_model(None) is None
+
+    def test_empty_string_becomes_none(self) -> None:
+        assert CodexRunner._resolve_model("") is None
 
 
 class TestAgentsMd:

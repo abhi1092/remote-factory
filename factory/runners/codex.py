@@ -7,9 +7,9 @@ agentic coding tool. Key interface differences from Claude Code:
 - System prompt is injected via an ``AGENTS.md`` file in the project directory
   (no --append-system-prompt-file flag)
 - JSON output via ``--json`` (JSONL to stdout)
-- Approval bypass via ``--ask-for-approval never``
-- Working directory via ``--cd <path>``
-- Auth via OPENAI_API_KEY env var
+- Headless approval bypass via ``--dangerously-bypass-approvals-and-sandbox``
+- Interactive approval bypass via ``--ask-for-approval never``
+- Working directory via ``-C <path>``
 - No session management (--name, --resume, --session-id)
 """
 
@@ -51,6 +51,9 @@ def _parse_codex_usage(data: dict) -> AgentUsage:
     )
 
 
+_CLAUDE_MODEL_ALIASES = {"sonnet", "opus", "haiku", "claude", "fable"}
+
+
 class CodexRunner:
     """Runner implementation for OpenAI Codex CLI."""
 
@@ -72,7 +75,17 @@ class CodexRunner:
             supports_background=False,
             supports_interactive=True,
             supports_streaming=True,
+            supports_model_override=False,
         )
+
+    @staticmethod
+    def _resolve_model(model: str | None) -> str | None:
+        """Strip Claude-specific model aliases; let Codex use its own default."""
+        if not model:
+            return None
+        if model.lower() in _CLAUDE_MODEL_ALIASES or model.lower().startswith("claude"):
+            return None
+        return model
 
     def _write_agents_md(self, cwd: Path, prompt: str) -> Path | None:
         """Write system prompt to AGENTS.md in the project directory.
@@ -98,24 +111,26 @@ class CodexRunner:
         if agents_md_path is not None:
             temp_files.append(agents_md_path)
 
+        model = self._resolve_model(request.model)
+
         cmd = [
             "codex",
             "exec",
             "--json",
-            "--ask-for-approval",
-            "never",
         ]
+        if request.skip_permissions:
+            cmd.append("--dangerously-bypass-approvals-and-sandbox")
         if request.cwd:
-            cmd.extend(["--cd", str(request.cwd)])
-        if request.model:
-            cmd.extend(["--model", request.model])
+            cmd.extend(["-C", str(request.cwd)])
+        if model:
+            cmd.extend(["--model", model])
         cmd.append(request.task)
 
         env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
         if request.cwd:
             env["PROJECT_PATH"] = str(Path(request.cwd).resolve())
-        if request.model:
-            env["FACTORY_MODEL"] = request.model
+        if model:
+            env["FACTORY_MODEL"] = model
 
         return cmd, env, temp_files
 
@@ -177,18 +192,22 @@ class CodexRunner:
         if agents_md_path is not None:
             temp_files.append(agents_md_path)
 
+        model = self._resolve_model(request.model)
+
         cmd = ["codex"]
+        if request.skip_permissions:
+            cmd.extend(["--ask-for-approval", "never"])
         if request.cwd:
-            cmd.extend(["--cd", str(request.cwd)])
-        if request.model:
-            cmd.extend(["--model", request.model])
+            cmd.extend(["-C", str(request.cwd)])
+        if model:
+            cmd.extend(["--model", model])
         cmd.append(request.task)
 
         env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
         if request.cwd:
             env["PROJECT_PATH"] = str(Path(request.cwd).resolve())
-        if request.model:
-            env["FACTORY_MODEL"] = request.model
+        if model:
+            env["FACTORY_MODEL"] = model
 
         try:
             log.info("codex_interactive", cwd=str(request.cwd))
