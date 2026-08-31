@@ -182,6 +182,7 @@ class CodexRunner:
             cmd.extend(["--cd", str(request.cwd)])
         if request.model:
             cmd.extend(["--model", request.model])
+        cmd.append(request.task)
 
         env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
         if request.cwd:
