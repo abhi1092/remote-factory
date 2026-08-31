@@ -17,9 +17,9 @@ class TestMetadata:
         meta = CodexRunner.metadata()
         assert meta.binary == "codex"
 
-    def test_requires_openai_key(self) -> None:
+    def test_no_required_env_vars(self) -> None:
         meta = CodexRunner.metadata()
-        assert "OPENAI_API_KEY" in meta.required_env_vars
+        assert meta.required_env_vars == []
 
     def test_no_session_support(self) -> None:
         meta = CodexRunner.metadata()

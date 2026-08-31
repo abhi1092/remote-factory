@@ -65,7 +65,7 @@ class CodexRunner:
             display_name="OpenAI Codex CLI",
             binary="codex",
             install_hint="npm install -g @openai/codex",
-            required_env_vars=["OPENAI_API_KEY"],
+
             supports_usage_telemetry=False,
             supports_session_name=False,
             supports_session_resume=False,
