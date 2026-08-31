@@ -87,31 +87,26 @@ class CodexRunner:
             return None
         return model
 
-    def _write_agents_md(self, cwd: Path, prompt: str) -> Path | None:
-        """Write system prompt to AGENTS.md in the project directory.
+    @staticmethod
+    def _build_combined_prompt(prompt: str, task: str) -> str:
+        """Combine system prompt and task into a single Codex prompt.
 
-        Returns the path if a file was created (caller must clean up),
-        or None if an existing AGENTS.md was found (left untouched).
+        Codex has no --append-system-prompt-file equivalent, so we prepend
+        the agent role prompt (researcher.md, builder.md, etc.) to the task.
         """
-        agents_md = cwd / "AGENTS.md"
-        if agents_md.exists():
-            log.debug("codex_agents_md_exists", path=str(agents_md))
-            return None
-        agents_md.write_text(prompt)
-        return agents_md
+        return f"{prompt}\n\n---\n\n## Task\n\n{task}"
 
     def build_command(
         self, request: AgentRunRequest
     ) -> tuple[list[str], dict[str, str], list[Path]]:
-        """Build the Codex CLI command, env dict, and temp files."""
-        temp_files: list[Path] = []
+        """Build the Codex CLI command, env dict, and temp files.
 
-        cwd = Path(request.cwd)
-        agents_md_path = self._write_agents_md(cwd, request.prompt)
-        if agents_md_path is not None:
-            temp_files.append(agents_md_path)
-
+        Returns an empty temp_files list — Codex prompt injection is inline,
+        not file-based, so there's nothing to clean up.
+        """
         model = self._resolve_model(request.model)
+        combined_prompt = self._build_combined_prompt(request.prompt, request.task)
+        temp_files: list[Path] = []
 
         cmd = [
             "codex",
@@ -124,7 +119,7 @@ class CodexRunner:
             cmd.extend(["-C", str(request.cwd)])
         if model:
             cmd.extend(["--model", model])
-        cmd.append(request.task)
+        cmd.append(combined_prompt)
 
         env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
         if request.cwd:
@@ -186,13 +181,8 @@ class CodexRunner:
 
     def interactive_run(self, request: AgentRunRequest) -> int:
         """Run an interactive Codex session as a subprocess."""
-        cwd = Path(request.cwd)
-        agents_md_path = self._write_agents_md(cwd, request.prompt)
-        temp_files: list[Path] = []
-        if agents_md_path is not None:
-            temp_files.append(agents_md_path)
-
         model = self._resolve_model(request.model)
+        combined_prompt = self._build_combined_prompt(request.prompt, request.task)
 
         cmd = ["codex"]
         if request.skip_permissions:
@@ -201,7 +191,7 @@ class CodexRunner:
             cmd.extend(["-C", str(request.cwd)])
         if model:
             cmd.extend(["--model", model])
-        cmd.append(request.task)
+        cmd.append(combined_prompt)
 
         env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
         if request.cwd:
@@ -214,5 +204,4 @@ class CodexRunner:
             result = subprocess.run(cmd, cwd=request.cwd, env=env)
             return result.returncode
         finally:
-            for f in temp_files:
-                f.unlink(missing_ok=True)
+            pass

@@ -50,7 +50,8 @@ class TestBuildCommand:
         assert cmd[1] == "exec"
         assert "--json" in cmd
         assert "--dangerously-bypass-approvals-and-sandbox" in cmd
-        assert cmd[-1] == "Fix the bug"
+        assert "Fix the bug" in cmd[-1]
+        assert "You are a helpful assistant." in cmd[-1]
 
     def test_model_flag(self, tmp_path: Path) -> None:
         runner = CodexRunner()
@@ -96,34 +97,41 @@ class TestModelResolution:
         assert CodexRunner._resolve_model("") is None
 
 
-class TestAgentsMd:
-    def test_creates_agents_md(self, tmp_path: Path) -> None:
+class TestCombinedPrompt:
+    def test_prompt_and_task_combined(self, tmp_path: Path) -> None:
         runner = CodexRunner()
         req = AgentRunRequest(
-            prompt="System instructions here.",
-            task="Do something",
+            prompt="You are a researcher.",
+            task="Find all bugs",
             cwd=tmp_path,
-            role="builder",
+            role="researcher",
         )
-        _cmd, _env, temp_files = runner.build_command(req)
-        agents_md = tmp_path / "AGENTS.md"
-        assert agents_md.exists()
-        assert agents_md.read_text() == "System instructions here."
-        assert agents_md in temp_files
+        cmd, _env, _temp = runner.build_command(req)
+        combined = cmd[-1]
+        assert "You are a researcher." in combined
+        assert "Find all bugs" in combined
 
-    def test_preserves_existing_agents_md(self, tmp_path: Path) -> None:
-        existing = tmp_path / "AGENTS.md"
-        existing.write_text("Existing project instructions.")
+    def test_no_agents_md_created(self, tmp_path: Path) -> None:
         runner = CodexRunner()
         req = AgentRunRequest(
-            prompt="Factory instructions.",
+            prompt="System instructions.",
+            task="Do something",
+            cwd=tmp_path,
+            role="builder",
+        )
+        runner.build_command(req)
+        assert not (tmp_path / "AGENTS.md").exists()
+
+    def test_no_temp_files(self, tmp_path: Path) -> None:
+        runner = CodexRunner()
+        req = AgentRunRequest(
+            prompt="System instructions.",
             task="Do something",
             cwd=tmp_path,
             role="builder",
         )
         _cmd, _env, temp_files = runner.build_command(req)
-        assert existing.read_text() == "Existing project instructions."
-        assert existing not in temp_files
+        assert temp_files == []
 
 
 class TestParseUsage:
